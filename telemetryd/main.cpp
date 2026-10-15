@@ -1,9 +1,16 @@
+#include "common/event_loop.h"
+#include "common/signal_fd.h"
 
 #include <getopt.h>
+#include <sys/epoll.h>
 
+#include <csignal>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
+#include <exception>
 
 namespace {
 
@@ -73,23 +80,48 @@ bool parse_args(int argc, char* argv[], Config& cfg)
 } // namespace
 
 int main(int argc, char *argv[]) {
-    Config cfg;
-    if (!parse_args(argc, argv, cfg)) return 2;
+    try {
+        sensornode::SignalFd signals{SIGTERM, SIGINT, SIGHUP};
 
-    if (show_help) {
-        print_usage();
+        Config cfg;
+        if (!parse_args(argc, argv, cfg)) return 2;
+
+        if (show_help) {
+            print_usage();
+            return EXIT_SUCCESS;
+        }
+
+        if (show_version) {
+            std::printf("sensornode-telemetryd %s\n", SENSORNODE_VERSION);
+            return EXIT_SUCCESS;
+        }
+
+        sensornode::EventLoop loop;
+
+        loop.add(signals.getfd(), EPOLLIN, [&](std::uint32_t) {
+            signals.drain([&](int signo) {
+                switch (signo) {
+                case SIGTERM:
+                case SIGINT:
+                    std::fprintf(stderr, "telemetryd: got %s, shutting down\n", strsignal(signo));
+                    loop.stop();
+                    break;
+                case SIGHUP:
+                    std::fprintf(stderr, "telemetryd: got SIGHUP, reload not supported yet\n");
+                    break;
+                default:
+                    std::fprintf(stderr, "telemetryd: unexpected signal %d\n", signo);
+                    break;
+                }
+            });
+        });
+        loop.run();
+
+        loop.remove(signals.getfd());
         return EXIT_SUCCESS;
+
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "telemetryd: fatal: %s\n", e.what());
+        return 1;
     }
-
-    if (show_version) {
-        std::printf("sensornode-telemetryd %s\n", SENSORNODE_VERSION);
-        return EXIT_SUCCESS;
-    }
-
-    std::printf("sensornode-telemetryd %s\n", SENSORNODE_VERSION);
-    std::printf("  fake_sensors : %s\n", cfg.fake_sensors ? "yes" : "no");
-    std::printf("  socket_path  : %s\n", cfg.socket_path.c_str());
-    std::printf("  db_path      : %s\n", cfg.db_path.c_str());
-
-    return EXIT_SUCCESS;
 }
