@@ -1,6 +1,7 @@
 add_library(sensornode_common STATIC
     event_loop.cpp
     signal_fd.cpp
+    timer.cpp
 )
 
 target_include_directories(sensornode_common PUBLIC ${PROJECT_SOURCE_DIR})
