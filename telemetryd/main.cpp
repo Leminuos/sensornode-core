@@ -1,6 +1,7 @@
 #include "common/event_loop.h"
 #include "common/signal_fd.h"
 #include "common/timer.h"
+#include "telemetryd/sensors.h"
 
 #include <getopt.h>
 #include <sys/epoll.h>
@@ -14,8 +15,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <string>
 #include <exception>
+#include <memory>
+#include <string>
 
 namespace {
 
@@ -24,13 +26,11 @@ bool show_version  = false;
 
 struct Config {
     bool        fake_sensors = false;
+    std::string i2c_bus      = "/dev/i2c-2";
     std::string socket_path  = "/run/sensornode/telemetry.sock";
     std::string db_path      = "/var/lib/sensornode/telemetry.db";
     std::chrono::milliseconds interval{5000};
 };
-
-// Thời gian chờ SHT30 đo xong. Datasheet: tối đa ~15 ms ở chế độ high
-constexpr std::chrono::milliseconds kMeasureDelay{20};
 
 // In log kèm mốc thời gian monotonic
 void log(const char* fmt, ...) {
@@ -46,7 +46,7 @@ void log(const char* fmt, ...) {
 }
 
 // Đọc một số nguyên dương từ chuỗi.
-bool parse_positive_ms(const char* s, std::chrono::milliseconds& out) {
+bool parse_positive(const char* s, long& out) {
     errno = 0;
     char* end = nullptr;
     const long v = std::strtol(s, &end, 10);
@@ -54,7 +54,7 @@ bool parse_positive_ms(const char* s, std::chrono::milliseconds& out) {
     // strtol không báo lỗi bằng giá trị trả về
     // nên phải kiểm tra: errno (tràn số), end (rác phía sau, chuỗi rỗng), khoảng.
     if (errno != 0 || end == s || *end != '\0' || v <= 0) return false;
-    out = std::chrono::milliseconds{v};
+    out = v;
     return true;
 }
 
@@ -63,6 +63,7 @@ void print_usage(void) {
         "Usage: sensornode-telemetryd [options]\n"
         "\n"
         "  -f, --fake-sensors        use simulated sensors instead of I2C\n"
+        "  -b, --i2c-bus PATH        I2C bus of the sensors (default: /dev/i2c-2)\n"
         "  -s, --socket-path PATH    control socket (default: /run/sensornode/telemetry.sock)\n"
         "  -d, --db-path PATH        SQLite database (default: /var/lib/sensornode/telemetry.db)\n"
         "  -i, --interval-ms MS      measurement period in ms (default: 5000)\n"
@@ -73,10 +74,11 @@ void print_usage(void) {
 
 bool parse_args(int argc, char* argv[], Config& cfg)
 {
-    static const char short_opts[] = ":fs:d:i:hv";
+    static const char short_opts[] = ":fb:s:d:i:hv";
 
     static const option long_opts[] = {
         {"fake-sensors", no_argument,       nullptr, 'f'},
+        {"i2c-bus",      required_argument, nullptr, 'b'},
         {"socket-path",  required_argument, nullptr, 's'},
         {"db-path",      required_argument, nullptr, 'd'},
         {"interval-ms",  required_argument, nullptr, 'i'},
@@ -86,16 +88,19 @@ bool parse_args(int argc, char* argv[], Config& cfg)
     };
 
     int opt;
+    long v;
     while ((opt = getopt_long(argc, argv, short_opts, long_opts, nullptr)) != -1) {
         switch (opt) {
         case 'f': cfg.fake_sensors = true; break;
+        case 'b': cfg.i2c_bus = optarg; break;
         case 's': cfg.socket_path = optarg; break;
         case 'd': cfg.db_path = optarg; break;
         case 'i':
-            if (!parse_positive_ms(optarg, cfg.interval)) {
+            if (!parse_positive(optarg, v)) {
                 std::fprintf(stderr, "%s: invalid --interval-ms '%s'\n", argv[0], optarg);
                 return false;
             }
+            cfg.interval = std::chrono::milliseconds{v};
             break;
         case 'h': show_help = true; break;
         case 'v': show_version = true; break;
@@ -117,7 +122,23 @@ bool parse_args(int argc, char* argv[], Config& cfg)
         return false;
     }
 
+    // Interval ngắn hơn thời gian đo thì tick nào cũng bị bỏ qua.
+    if (cfg.interval <= sensornode::kMeasureTime) {
+        std::fprintf(stderr, "%s: --interval-ms must be greater than %lld\n",
+                     argv[0], static_cast<long long>(sensornode::kMeasureTime.count()));
+        return false;
+    }
+
     return true;
+}
+
+void log_sample(const sensornode::Sample& s) {
+    log("temperature=%.2f C  humidity=%.2f %%RH  lux=%.2f lx",
+        s.temp_c, s.humi_rh, s.lux);
+
+    for (const auto& e : s.errors) {
+        log("warning: %s: %s", e.sensor, std::strerror(-e.err));
+    }
 }
 
 } // namespace
@@ -159,34 +180,41 @@ int main(int argc, char *argv[]) {
             });
         });
 
-        enum class MeasureState { Idle, Measuring };
-        MeasureState state = MeasureState::Idle;
-        std::uint64_t measure_count = 0;
+        std::unique_ptr<sensornode::Sensors> sensors;
+        if (cfg.fake_sensors) {
+            sensors = sensornode::make_fake_sensors();
+        } else {
+            sensors = sensornode::make_i2c_sensors(cfg.i2c_bus);
+        }
 
-        sensornode::Timer measure(loop, [&](std::uint64_t) {
-            if (state != MeasureState::Measuring) return;
-            ++measure_count;
+        bool measuring = false;
 
-            const double temp = 25.0 + 0.1 * static_cast<double>(measure_count % 10);
-            log("measurement #%" PRIu64 " done: %.1f C", measure_count, temp);
-            state = MeasureState::Idle;
+        sensornode::Timer measure_done(loop, [&](std::uint64_t) {
+            measuring = false;
+            sensornode::Sample s;
+            sensors->fetch(s);
+            log_sample(s);
         });
 
-        sensornode::Timer tick(loop, [&](std::uint64_t expirations) {
-
-            if (expirations > 1) {
-                log("warning: missed %" PRIu64 " tick(s)", expirations - 1);
-            }
-
-            if (state == MeasureState::Measuring) {
+        const auto start_measurement = [&]() {
+            if (measuring) {
                 log("warning: previous measurement still running, skipping tick");
                 return;
             }
+            sensors->start();
+            measuring = true;
+            measure_done.start_oneshot(sensornode::kMeasureTime);
+        };
 
-            state = MeasureState::Measuring;
-            measure.start_oneshot(kMeasureDelay);
+        sensornode::Timer tick(loop, [&](std::uint64_t expirations) {
+            if (expirations > 1) {
+                log("warning: missed %" PRIu64 " tick(s)", expirations - 1);
+            }
+            start_measurement();
         });
 
+        // Đo ngay khi khởi động, không đợi hết interval đầu tiên.
+        start_measurement();
         tick.start_periodic(cfg.interval);
 
         loop.run();
