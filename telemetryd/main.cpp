@@ -1,6 +1,8 @@
 #include "common/event_loop.h"
 #include "common/signal_fd.h"
 #include "common/timer.h"
+#include "common/unix_server.h"
+#include "telemetryd/protocol.h"
 #include "telemetryd/sensors.h"
 #include "telemetryd/storage.h"
 
@@ -191,6 +193,29 @@ int main(int argc, char *argv[]) {
         sensornode::Storage storage(cfg.db_path);
         log("database: %s", cfg.db_path.c_str());
 
+        bool have_latest = false;
+        sensornode::Sample latest;
+
+        sensornode::UnixServer::Options sopts;
+        sopts.path = cfg.socket_path;
+        sensornode::UnixServer server(loop, sopts);
+        log("listening on %s", cfg.socket_path.c_str());
+
+        server.on_connect([&](sensornode::UnixServer::ClientId id, const sensornode::PeerCred& p) {
+            log("client %" PRIu64 " connected: pid=%d uid=%d gid=%d", id,
+                static_cast<int>(p.pid), static_cast<int>(p.uid), static_cast<int>(p.gid));
+            server.send(id, sensornode::make_hello(cfg.interval));
+            return true;
+        });
+
+        server.on_disconnect([&](sensornode::UnixServer::ClientId id, const char* reason) {
+            log("client %" PRIu64 " disconnected: %s", id, reason);
+        });
+
+        server.on_line([&](sensornode::UnixServer::ClientId id, const std::string& line) {
+            server.send(id, sensornode::handle_command(line, have_latest ? &latest : nullptr));
+        });
+
         bool measuring = false;
 
         sensornode::Timer measure_done(loop, [&](std::uint64_t) {
@@ -203,6 +228,10 @@ int main(int argc, char *argv[]) {
             if (!storage.insert(s)) {
                 log("error: database: %s", storage.errmsg());
             }
+
+            server.broadcast(sensornode::make_sample_event(s));
+            latest = std::move(s);
+            have_latest = true;
         });
 
         const auto start_measurement = [&]() {

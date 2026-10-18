@@ -18,6 +18,7 @@ target_compile_options(sensornode_build_flags INTERFACE
     -Wnon-virtual-dtor
     -Wcast-align
     -Wformat=2
+    $<$<CXX_COMPILER_ID:GNU>:-Wno-psabi>
 )
 
 add_subdirectory(common)
