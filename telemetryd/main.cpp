@@ -2,6 +2,7 @@
 #include "common/signal_fd.h"
 #include "common/timer.h"
 #include "telemetryd/sensors.h"
+#include "telemetryd/storage.h"
 
 #include <getopt.h>
 #include <sys/epoll.h>
@@ -187,13 +188,21 @@ int main(int argc, char *argv[]) {
             sensors = sensornode::make_i2c_sensors(cfg.i2c_bus);
         }
 
+        sensornode::Storage storage(cfg.db_path);
+        log("database: %s", cfg.db_path.c_str());
+
         bool measuring = false;
 
         sensornode::Timer measure_done(loop, [&](std::uint64_t) {
             measuring = false;
             sensornode::Sample s;
+            s.ts_ms = sensornode::wall_now_ms();
             sensors->fetch(s);
             log_sample(s);
+
+            if (!storage.insert(s)) {
+                log("error: database: %s", storage.errmsg());
+            }
         });
 
         const auto start_measurement = [&]() {
@@ -213,9 +222,26 @@ int main(int argc, char *argv[]) {
             start_measurement();
         });
 
-        // Đo ngay khi khởi động, không đợi hết interval đầu tiên.
+        const auto run_maintenance = [&]() {
+            const auto t0 = sensornode::monotonic_now();
+            sensornode::MaintenanceStats st;
+            if (!storage.maintenance(sensornode::wall_now_ms(), st)) {
+                log("error: database maintenance: %s", storage.errmsg());
+                return;
+            }
+            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                sensornode::monotonic_now() - t0).count();
+            log("database maintenance: %d hour(s) aggregated, %d raw / %d hourly row(s) purged, %lld ms",
+                st.hours_aggregated, st.raw_purged, st.hourly_purged, static_cast<long long>(ms));
+        };
+
+        sensornode::Timer maintenance(loop, [&](std::uint64_t) { run_maintenance(); });
+
+        // Chạy ngay khi khởi động, không đợi hết chu kỳ đầu.
         start_measurement();
         tick.start_periodic(cfg.interval);
+        run_maintenance();
+        maintenance.start_periodic(sensornode::kMaintenanceInterval);
 
         loop.run();
 

@@ -6,8 +6,16 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 
 namespace sensornode {
+
+bool Sample::failed(const char* sensor) const {
+    for (const auto& e : errors) {
+        if (std::strcmp(e.sensor, sensor) == 0) return true;
+    }
+    return false;
+}
 
 class I2cSensors final : public Sensors {
 public:
@@ -21,7 +29,7 @@ public:
 
     void fetch(Sample& out) override {
         if (sht30_start_err_ != 0) {
-            out.errors.push_back({"sht30", sht30_start_err_});
+            out.errors.push_back({kSht30, sht30_start_err_});
         } else {
             Sht30::Reading r;
             const int err = sht30_.fetch(r);
@@ -29,19 +37,19 @@ public:
                 out.temp_c  = r.temp_c;
                 out.humi_rh = r.humi_rh;
             } else {
-                out.errors.push_back({"sht30", err});
+                out.errors.push_back({kSht30, err});
             }
         }
 
         if (bh1750_start_err_ != 0) {
-            out.errors.push_back({"bh1750", bh1750_start_err_});
+            out.errors.push_back({kBh1750, bh1750_start_err_});
         } else {
             double lux = 0;
             const int err = bh1750_.fetch(lux);
             if (err == 0) {
                 out.lux = lux;
             } else {
-                out.errors.push_back({"bh1750", err});
+                out.errors.push_back({kBh1750, err});
             }
         }
     }
