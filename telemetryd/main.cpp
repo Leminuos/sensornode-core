@@ -2,12 +2,14 @@
 #include "common/signal_fd.h"
 #include "common/timer.h"
 #include "common/unix_server.h"
+#include "telemetryd/mqtt_client.h"
 #include "telemetryd/protocol.h"
 #include "telemetryd/sensors.h"
 #include "telemetryd/storage.h"
 
 #include <getopt.h>
 #include <sys/epoll.h>
+#include <unistd.h>
 
 #include <cerrno>
 #include <chrono>
@@ -32,6 +34,9 @@ struct Config {
     std::string i2c_bus      = "/dev/i2c-2";
     std::string socket_path  = "/run/sensornode/telemetry.sock";
     std::string db_path      = "/var/lib/sensornode/telemetry.db";
+    std::string mqtt_host;
+    int         mqtt_port    = 1883;
+    std::string node_id;
     std::chrono::milliseconds interval{5000};
 };
 
@@ -70,6 +75,9 @@ void print_usage(void) {
         "  -s, --socket-path PATH    control socket (default: /run/sensornode/telemetry.sock)\n"
         "  -d, --db-path PATH        SQLite database (default: /var/lib/sensornode/telemetry.db)\n"
         "  -i, --interval-ms MS      measurement period in ms (default: 5000)\n"
+        "  -m, --mqtt-host HOST      MQTT broker, IP preferred (default: MQTT disabled)\n"
+        "  -p, --mqtt-port PORT      MQTT broker port (default: 1883)\n"
+        "  -n, --node-id ID          node id in MQTT topics (default: hostname)\n"
         "  -h, --help                show this help\n"
         "  -v, --version             show version\n"
     );
@@ -77,7 +85,7 @@ void print_usage(void) {
 
 bool parse_args(int argc, char* argv[], Config& cfg)
 {
-    static const char short_opts[] = ":fb:s:d:i:hv";
+    static const char short_opts[] = ":fb:s:d:i:m:p:n:hv";
 
     static const option long_opts[] = {
         {"fake-sensors", no_argument,       nullptr, 'f'},
@@ -85,6 +93,9 @@ bool parse_args(int argc, char* argv[], Config& cfg)
         {"socket-path",  required_argument, nullptr, 's'},
         {"db-path",      required_argument, nullptr, 'd'},
         {"interval-ms",  required_argument, nullptr, 'i'},
+        {"mqtt-host",    required_argument, nullptr, 'm'},
+        {"mqtt-port",    required_argument, nullptr, 'p'},
+        {"node-id",      required_argument, nullptr, 'n'},
         {"help",         no_argument,       nullptr, 'h'},
         {"version",      no_argument,       nullptr, 'v'},
         {nullptr,        0,                 nullptr,  0 },
@@ -105,6 +116,15 @@ bool parse_args(int argc, char* argv[], Config& cfg)
             }
             cfg.interval = std::chrono::milliseconds{v};
             break;
+        case 'm': cfg.mqtt_host = optarg; break;
+        case 'p':
+            if (!parse_positive(optarg, v) || v > 65535) {
+                std::fprintf(stderr, "%s: invalid --mqtt-port '%s'\n", argv[0], optarg);
+                return false;
+            }
+            cfg.mqtt_port = static_cast<int>(v);
+            break;
+        case 'n': cfg.node_id = optarg; break;
         case 'h': show_help = true; break;
         case 'v': show_version = true; break;
         case ':':
@@ -129,6 +149,16 @@ bool parse_args(int argc, char* argv[], Config& cfg)
     if (cfg.interval <= sensornode::kMeasureTime) {
         std::fprintf(stderr, "%s: --interval-ms must be greater than %lld\n",
                      argv[0], static_cast<long long>(sensornode::kMeasureTime.count()));
+        return false;
+    }
+
+    if (cfg.node_id.empty()) {
+        char host[256] = {};
+        if (gethostname(host, sizeof host - 1) == 0) cfg.node_id = host;
+    }
+    // Ký tự wildcard/phân cấp của MQTT không được nằm trong một level của topic.
+    if (cfg.node_id.empty() || cfg.node_id.find_first_of("/+#") != std::string::npos) {
+        std::fprintf(stderr, "%s: invalid --node-id '%s'\n", argv[0], cfg.node_id.c_str());
         return false;
     }
 
@@ -216,6 +246,34 @@ int main(int argc, char *argv[]) {
             server.send(id, sensornode::handle_command(line, have_latest ? &latest : nullptr));
         });
 
+        std::unique_ptr<sensornode::MqttClient> mqtt;
+        const std::string topic_base      = "sensornode/" + cfg.node_id;
+        const std::string status_topic    = topic_base + "/status";
+        const std::string telemetry_topic = topic_base + "/telemetry";
+
+        if (!cfg.mqtt_host.empty()) {
+            sensornode::MqttClient::Options mopts;
+            mopts.host         = cfg.mqtt_host;
+            mopts.port         = cfg.mqtt_port;
+            mopts.client_id    = "telemetryd-" + cfg.node_id;
+            mopts.will_topic   = status_topic;
+            mopts.will_payload = "offline";
+            mqtt = std::make_unique<sensornode::MqttClient>(loop, mopts);
+
+            mqtt->on_connect([&]() {
+                log("mqtt: connected to %s:%d", cfg.mqtt_host.c_str(), cfg.mqtt_port);
+                mqtt->publish(status_topic, "online", 1, true);
+            });
+            mqtt->on_disconnect([&](const char* reason, std::chrono::seconds retry_in) {
+                log("mqtt: %s, retry in %lld s", reason, static_cast<long long>(retry_in.count()));
+            });
+
+            log("mqtt: broker %s:%d, topic %s/#", cfg.mqtt_host.c_str(), cfg.mqtt_port, topic_base.c_str());
+            mqtt->start();
+        } else {
+            log("mqtt: disabled (no --mqtt-host)");
+        }
+
         bool measuring = false;
 
         sensornode::Timer measure_done(loop, [&](std::uint64_t) {
@@ -230,6 +288,7 @@ int main(int argc, char *argv[]) {
             }
 
             server.broadcast(sensornode::make_sample_event(s));
+            if (mqtt) mqtt->publish(telemetry_topic, sensornode::make_sample_payload(s), 1, false);
             latest = std::move(s);
             have_latest = true;
         });
@@ -273,6 +332,8 @@ int main(int argc, char *argv[]) {
         maintenance.start_periodic(sensornode::kMaintenanceInterval);
 
         loop.run();
+
+        if (mqtt) mqtt->stop();
 
         loop.remove(signals.getfd());
         

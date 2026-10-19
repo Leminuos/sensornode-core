@@ -59,7 +59,8 @@ void EventLoop::remove(int fd) {
     const auto it = entries_.find(fd);
     if (it == entries_.end()) return;
 
-    if (epoll_ctl(epfd_, EPOLL_CTL_DEL, fd, nullptr) < 0) {
+    // EBADF: fd đã bị close (vd libmosquitto tự close), kernel tự gỡ khỏi epoll.
+    if (epoll_ctl(epfd_, EPOLL_CTL_DEL, fd, nullptr) < 0 && errno != EBADF) {
         std::perror("EventLoop::remove: epoll_ctl(DEL)");
     }
 

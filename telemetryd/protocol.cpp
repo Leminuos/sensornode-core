@@ -60,6 +60,20 @@
  *   | unknown command | cmd không được hỗ trợ             |
  *   | no sample yet   | get_latest khi chưa đo lần nào    |
  *   +-----------------+-----------------------------------+
+ *
+ *
+ * 5. MQTT
+ * -------
+ *
+ *   +--------------------------------+-----+--------+----------------------------------+
+ *   | Topic                          | QoS | Retain | Payload                          |
+ *   +================================+=====+========+==================================+
+ *   | sensornode/<node>/status       | 1   | có     | online / offline (LWT)           |
+ *   | sensornode/<node>/telemetry    | 1   | không  | sample không có type             |
+ *   +--------------------------------+-----+--------+----------------------------------+
+ *
+ *   telemetry
+ *     {"ts":1792297659621,"temp_c":24.16,"humi_rh":54.48,"lux":310.47,"errors":[]}
  */
 
 #include "telemetryd/protocol.h"
@@ -121,6 +135,10 @@ std::string make_sample_event(const Sample& s) {
     json j = sample_to_json(s);
     j["type"] = "sample";
     return to_line(j);
+}
+
+std::string make_sample_payload(const Sample& s) {
+    return to_line(sample_to_json(s));
 }
 
 std::string handle_command(const std::string& line, const Sample* latest) {

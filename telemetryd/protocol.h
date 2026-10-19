@@ -13,6 +13,9 @@ std::string make_hello(std::chrono::milliseconds interval);
 // Message broadcast sau mỗi lần đo.
 std::string make_sample_event(const Sample& s);
 
+// Payload publish lên MQTT topic telemetry.
+std::string make_sample_payload(const Sample& s);
+
 // Xử lý một dòng lệnh từ client và trả về dòng reply
 std::string handle_command(const std::string& line, const Sample* latest);
 
