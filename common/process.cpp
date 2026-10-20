@@ -153,19 +153,26 @@ void Process::read_output() {
         }
 
         partial_.append(buf, static_cast<std::size_t>(n));
-        std::size_t pos;
-        while ((pos = partial_.find('\n')) != std::string::npos) {
-            std::string line = partial_.substr(0, pos);
+        emit_lines();
+    }
+}
+
+// Dòng dài hơn kMaxLine bị cắt thành nhiều dòng, dù '\n' đến cùng lần read hay lần sau.
+void Process::emit_lines() {
+    for (;;) {
+        std::string line;
+        const std::size_t pos = partial_.find('\n');
+        if (pos != std::string::npos && pos <= kMaxLine) {
+            line = partial_.substr(0, pos);
             partial_.erase(0, pos + 1);
             if (!line.empty() && line.back() == '\r') line.pop_back();
-            if (on_output_) on_output_(line);
-        }
-
-        while (partial_.size() >= kMaxLine) {
-            const std::string line = partial_.substr(0, kMaxLine);
+        } else if (partial_.size() >= kMaxLine) {
+            line = partial_.substr(0, kMaxLine);
             partial_.erase(0, kMaxLine);
-            if (on_output_) on_output_(line);
+        } else {
+            return;
         }
+        if (on_output_) on_output_(line);
     }
 }
 
