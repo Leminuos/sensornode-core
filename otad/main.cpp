@@ -3,6 +3,8 @@
 #include "common/signal_fd.h"
 #include "common/systemd.h"
 #include "common/unix_server.h"
+#include "otad/installer.h"
+#include "otad/ota_manager.h"
 #include "otad/protocol.h"
 #include "otad/system_info.h"
 
@@ -19,6 +21,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -36,7 +39,8 @@ std::string or_unknown(const std::optional<int>& v) {
 }
 
 struct Config {
-    std::string socket_path = "/run/sensornode/ota.sock";
+    bool        fake_installer = false;
+    std::string socket_path    = "/run/sensornode/ota.sock";
     sensornode::ota::SystemInfo::Paths sys;
 };
 
@@ -45,6 +49,7 @@ void print_usage()
     std::fprintf(stdout,
         "Usage: sensornode-otad [options]\n"
         "\n"
+        "  -f, --fake-installer      simulate download/install instead of running SWUpdate\n"
         "  -s, --socket-path PATH    control socket (default: /run/sensornode/ota.sock)\n"
         "  -w, --sw-versions PATH    firmware version file (default: /etc/sw-versions)\n"
         "  -e, --fw-env-config PATH  U-Boot env config (default: /etc/fw_env.config)\n"
@@ -56,21 +61,23 @@ void print_usage()
 
 bool parse_args(int argc, char* argv[], Config& cfg)
 {
-    static const char short_opts[] = ":s:w:e:k:hv";
+    static const char short_opts[] = ":fs:w:e:k:hv";
 
     static const option long_opts[] = {
-        {"socket-path",   required_argument, nullptr, 's'},
-        {"sw-versions",   required_argument, nullptr, 'w'},
-        {"fw-env-config", required_argument, nullptr, 'e'},
-        {"cmdline",       required_argument, nullptr, 'k'},
-        {"help",          no_argument,       nullptr, 'h'},
-        {"version",       no_argument,       nullptr, 'v'},
-        {nullptr,         0,                 nullptr,  0 },
+        {"fake-installer", no_argument,       nullptr, 'f'},
+        {"socket-path",    required_argument, nullptr, 's'},
+        {"sw-versions",    required_argument, nullptr, 'w'},
+        {"fw-env-config",  required_argument, nullptr, 'e'},
+        {"cmdline",        required_argument, nullptr, 'k'},
+        {"help",           no_argument,       nullptr, 'h'},
+        {"version",        no_argument,       nullptr, 'v'},
+        {nullptr,          0,                 nullptr,  0 },
     };
 
     int opt;
     while ((opt = getopt_long(argc, argv, short_opts, long_opts, nullptr)) != -1) {
         switch (opt) {
+        case 'f': cfg.fake_installer = true; break;
         case 's': cfg.socket_path = optarg; break;
         case 'w': cfg.sys.sw_versions = optarg; break;
         case 'e': cfg.sys.fw_env_config = optarg; break;
@@ -160,10 +167,40 @@ int main(int argc, char* argv[])
         sensornode::UnixServer server(loop, sopts);
         SN_LOG_INFO("ipc", "listening path=%s", sopts.path.c_str());
 
+        std::unique_ptr<sensornode::ota::Installer> installer;
+        if (cfg.fake_installer) {
+            installer = sensornode::ota::make_fake_installer(loop);
+        } else {
+            SN_LOG_WARN("ota", "no installer backend yet, install disabled (use --fake-installer)");
+        }
+
+        // SWUpdate đã ghi slot kia và chưa reboot, otad restart giữa chừng vẫn phải báo done.
+        const bool reboot_pending = st.running_slot && st.active_slot && st.ustate == 1 &&
+                                    *st.running_slot != *st.active_slot;
+
+        sensornode::ota::OtaManager ota(std::move(installer), reboot_pending);
+        SN_LOG_INFO("ota", "initial state=%s", sensornode::ota::to_string(ota.snapshot().state));
+
+        const auto update_status = [&]() {
+            sensornode::systemd::notify(
+                std::string("STATUS=state=") + sensornode::ota::to_string(ota.snapshot().state) +
+                " sw_version=" + or_unknown(st.sw_version) + " slot=" + or_unknown(st.running_slot));
+        };
+
+        ota.on_state([&](const sensornode::ota::OtaManager::Snapshot& s) {
+            server.broadcast(sensornode::ota::make_state_event(s));
+            update_status();
+        });
+
+        // STATUS chỉ đổi theo state, progress gửi lên systemd quá dày không có ích.
+        ota.on_progress([&](const sensornode::ota::OtaManager::Snapshot& s) {
+            server.broadcast(sensornode::ota::make_progress_event(s));
+        });
+
         server.on_connect([&](sensornode::UnixServer::ClientId id, const sensornode::PeerCred& p) {
             SN_LOG_INFO("ipc", "client connected cid=%" PRIu64 " pid=%d uid=%d gid=%d", id,
                         static_cast<int>(p.pid), static_cast<int>(p.uid), static_cast<int>(p.gid));
-            server.send(id, sensornode::ota::make_hello());
+            server.send(id, sensornode::ota::make_hello(ota.snapshot()));
             return true;
         });
 
@@ -174,7 +211,7 @@ int main(int argc, char* argv[])
         server.on_line([&](sensornode::UnixServer::ClientId id, const std::string& line) {
             SN_LOG_DEBUG("ipc", "line received cid=%" PRIu64 " line=%s", id,
                          sensornode::log::quote(line).c_str());
-            server.send(id, sensornode::ota::handle_command(line, sys));
+            server.send(id, sensornode::ota::handle_command(line, sys, ota));
         });
 
         // Chưa có việc background nào để kiểm tra, tick chạy được nghĩa là loop không bị kẹt.
@@ -182,8 +219,7 @@ int main(int argc, char* argv[])
 
         SN_LOG_NOTICE("main", "ready");
         sensornode::systemd::notify("READY=1");
-        sensornode::systemd::notify(std::string("STATUS=state=idle sw_version=") +
-                                    or_unknown(st.sw_version) + " slot=" + or_unknown(st.running_slot));
+        update_status();
         loop.run();
 
         loop.remove(signals.getfd());
