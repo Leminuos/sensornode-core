@@ -1,4 +1,5 @@
 #include "common/event_loop.h"
+#include "common/log.h"
 #include "common/signal_fd.h"
 #include "common/timer.h"
 #include "common/unix_server.h"
@@ -6,6 +7,8 @@
 #include "telemetryd/protocol.h"
 #include "telemetryd/sensors.h"
 #include "telemetryd/storage.h"
+
+#include "git_version.h"
 
 #include <getopt.h>
 #include <sys/epoll.h>
@@ -15,7 +18,6 @@
 #include <chrono>
 #include <cinttypes>
 #include <csignal>
-#include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -39,19 +41,6 @@ struct Config {
     std::string node_id;
     std::chrono::milliseconds interval{5000};
 };
-
-// In log kèm mốc thời gian monotonic
-void log(const char* fmt, ...) {
-    using namespace std::chrono;
-    const auto now = std::chrono::duration_cast<milliseconds>(sensornode::monotonic_now()).count();
-    std::printf("[%6lld.%03lld] telemetryd: ",
-                 static_cast<long long>(now / 1000), static_cast<long long>(now % 1000));
-    va_list ap;
-    va_start(ap, fmt);
-    std::vprintf(fmt, ap);
-    va_end(ap);
-    std::printf("\n");
-}
 
 // Đọc một số nguyên dương từ chuỗi.
 bool parse_positive(const char* s, long& out) {
@@ -165,15 +154,6 @@ bool parse_args(int argc, char* argv[], Config& cfg)
     return true;
 }
 
-void log_sample(const sensornode::Sample& s) {
-    log("temperature=%.2f C  humidity=%.2f %%RH  lux=%.2f lx",
-        s.temp_c, s.humi_rh, s.lux);
-
-    for (const auto& e : s.errors) {
-        log("warning: %s: %s", e.sensor, std::strerror(-e.err));
-    }
-}
-
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -189,9 +169,17 @@ int main(int argc, char *argv[]) {
         }
 
         if (show_version) {
-            std::printf("sensornode-telemetryd %s\n", SENSORNODE_VERSION);
+            std::printf("sensornode-telemetryd %s (%s)\n", SENSORNODE_VERSION, SENSORNODE_GIT);
             return EXIT_SUCCESS;
         }
+
+        sensornode::log::init();
+
+        SN_LOG_NOTICE("main", "starting version=%s git=%s pid=%d",
+                      SENSORNODE_VERSION, SENSORNODE_GIT, static_cast<int>(getpid()));
+        SN_LOG_INFO("main", "config node=%s interval=%lldms log_level=%s",
+                    cfg.node_id.c_str(), static_cast<long long>(cfg.interval.count()),
+                    sensornode::log::level_name(sensornode::log::level()));
 
         sensornode::EventLoop loop;
 
@@ -200,14 +188,14 @@ int main(int argc, char *argv[]) {
                 switch (signo) {
                 case SIGTERM:
                 case SIGINT:
-                    std::fprintf(stderr, "telemetryd: got %s, shutting down\n", strsignal(signo));
+                    SN_LOG_NOTICE("main", "shutting down signal=SIG%s", sigabbrev_np(signo));
                     loop.stop();
                     break;
                 case SIGHUP:
-                    std::fprintf(stderr, "telemetryd: got SIGHUP, reload not supported yet\n");
+                    SN_LOG_NOTICE("main", "reload not supported, ignored signal=SIGHUP");
                     break;
                 default:
-                    std::fprintf(stderr, "telemetryd: unexpected signal %d\n", signo);
+                    SN_LOG_WARN("main", "unexpected signal signo=%d", signo);
                     break;
                 }
             });
@@ -221,7 +209,7 @@ int main(int argc, char *argv[]) {
         }
 
         sensornode::Storage storage(cfg.db_path);
-        log("database: %s", cfg.db_path.c_str());
+        SN_LOG_INFO("db", "opened path=%s", cfg.db_path.c_str());
 
         bool have_latest = false;
         sensornode::Sample latest;
@@ -229,20 +217,22 @@ int main(int argc, char *argv[]) {
         sensornode::UnixServer::Options sopts;
         sopts.path = cfg.socket_path;
         sensornode::UnixServer server(loop, sopts);
-        log("listening on %s", cfg.socket_path.c_str());
+        SN_LOG_INFO("ipc", "listening path=%s", sopts.path.c_str());
 
         server.on_connect([&](sensornode::UnixServer::ClientId id, const sensornode::PeerCred& p) {
-            log("client %" PRIu64 " connected: pid=%d uid=%d gid=%d", id,
-                static_cast<int>(p.pid), static_cast<int>(p.uid), static_cast<int>(p.gid));
+            SN_LOG_INFO("ipc", "client connected cid=%" PRIu64 " pid=%d uid=%d gid=%d", id,
+                        static_cast<int>(p.pid), static_cast<int>(p.uid), static_cast<int>(p.gid));
             server.send(id, sensornode::make_hello(cfg.interval));
             return true;
         });
 
         server.on_disconnect([&](sensornode::UnixServer::ClientId id, const char* reason) {
-            log("client %" PRIu64 " disconnected: %s", id, reason);
+            SN_LOG_INFO("ipc", "client disconnected: %s cid=%" PRIu64, reason, id);
         });
 
         server.on_line([&](sensornode::UnixServer::ClientId id, const std::string& line) {
+            SN_LOG_DEBUG("ipc", "line received cid=%" PRIu64 " line=%s", id,
+                         sensornode::log::quote(line).c_str());
             server.send(id, sensornode::handle_command(line, have_latest ? &latest : nullptr));
         });
 
@@ -261,17 +251,19 @@ int main(int argc, char *argv[]) {
             mqtt = std::make_unique<sensornode::MqttClient>(loop, mopts);
 
             mqtt->on_connect([&]() {
-                log("mqtt: connected to %s:%d", cfg.mqtt_host.c_str(), cfg.mqtt_port);
+                SN_LOG_INFO("mqtt", "connected host=%s port=%d", cfg.mqtt_host.c_str(), cfg.mqtt_port);
                 mqtt->publish(status_topic, "online", 1, true);
             });
             mqtt->on_disconnect([&](const char* reason, std::chrono::seconds retry_in) {
-                log("mqtt: %s, retry in %lld s", reason, static_cast<long long>(retry_in.count()));
+                SN_LOG_WARN("mqtt", "disconnected: %s retry_in=%llds", reason,
+                            static_cast<long long>(retry_in.count()));
             });
 
-            log("mqtt: broker %s:%d, topic %s/#", cfg.mqtt_host.c_str(), cfg.mqtt_port, topic_base.c_str());
+            SN_LOG_INFO("mqtt", "broker host=%s port=%d client_id=%s topic=%s/#",
+                        cfg.mqtt_host.c_str(), cfg.mqtt_port, mopts.client_id.c_str(), topic_base.c_str());
             mqtt->start();
         } else {
-            log("mqtt: disabled (no --mqtt-host)");
+            SN_LOG_INFO("mqtt", "disabled reason=\"no --mqtt-host\"");
         }
 
         bool measuring = false;
@@ -281,10 +273,11 @@ int main(int argc, char *argv[]) {
             sensornode::Sample s;
             s.ts_ms = sensornode::wall_now_ms();
             sensors->fetch(s);
-            log_sample(s);
+            SN_LOG_DEBUG("sensor", "sample ts_ms=%" PRId64 " temp_c=%.2f humi_rh=%.2f lux=%.2f",
+                         s.ts_ms, s.temp_c, s.humi_rh, s.lux);
 
             if (!storage.insert(s)) {
-                log("error: database: %s", storage.errmsg());
+                SN_LOG_ERR("db", "insert failed: %s ts_ms=%" PRId64, storage.errmsg(), s.ts_ms);
             }
 
             server.broadcast(sensornode::make_sample_event(s));
@@ -295,7 +288,7 @@ int main(int argc, char *argv[]) {
 
         const auto start_measurement = [&]() {
             if (measuring) {
-                log("warning: previous measurement still running, skipping tick");
+                SN_LOG_WARN("sensor", "tick skipped: previous measurement still running");
                 return;
             }
             sensors->start();
@@ -305,7 +298,8 @@ int main(int argc, char *argv[]) {
 
         sensornode::Timer tick(loop, [&](std::uint64_t expirations) {
             if (expirations > 1) {
-                log("warning: missed %" PRIu64 " tick(s)", expirations - 1);
+                SN_LOG_WARN("main", "ticks missed count=%" PRIu64 " interval=%lldms",
+                            expirations - 1, static_cast<long long>(cfg.interval.count()));
             }
             start_measurement();
         });
@@ -314,13 +308,13 @@ int main(int argc, char *argv[]) {
             const auto t0 = sensornode::monotonic_now();
             sensornode::MaintenanceStats st;
             if (!storage.maintenance(sensornode::wall_now_ms(), st)) {
-                log("error: database maintenance: %s", storage.errmsg());
+                SN_LOG_ERR("db", "maintenance failed: %s", storage.errmsg());
                 return;
             }
             const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 sensornode::monotonic_now() - t0).count();
-            log("database maintenance: %d hour(s) aggregated, %d raw / %d hourly row(s) purged, %lld ms",
-                st.hours_aggregated, st.raw_purged, st.hourly_purged, static_cast<long long>(ms));
+            SN_LOG_INFO("db", "maintenance done hours_aggregated=%d raw_purged=%d hourly_purged=%d took=%lldms",
+                        st.hours_aggregated, st.raw_purged, st.hourly_purged, static_cast<long long>(ms));
         };
 
         sensornode::Timer maintenance(loop, [&](std::uint64_t) { run_maintenance(); });
@@ -331,6 +325,7 @@ int main(int argc, char *argv[]) {
         run_maintenance();
         maintenance.start_periodic(sensornode::kMaintenanceInterval);
 
+        SN_LOG_NOTICE("main", "ready");
         loop.run();
 
         if (mqtt) mqtt->stop();
@@ -340,7 +335,7 @@ int main(int argc, char *argv[]) {
         return EXIT_SUCCESS;
 
     } catch (const std::exception& e) {
-        std::fprintf(stderr, "telemetryd: fatal: %s\n", e.what());
+        SN_LOG_ERR("main", "fatal: %s", e.what());
         return 1;
     }
 }

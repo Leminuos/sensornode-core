@@ -1,5 +1,6 @@
 add_library(sensornode_common STATIC
     event_loop.cpp
+    log.cpp
     signal_fd.cpp
     timer.cpp
     unix_server.cpp

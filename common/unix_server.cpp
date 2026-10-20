@@ -1,5 +1,6 @@
 #include "common/unix_server.h"
 #include "common/event_loop.h"
+#include "common/log.h"
 
 #include <sys/epoll.h>
 #include <sys/socket.h>
@@ -8,7 +9,6 @@
 #include <unistd.h>
 
 #include <cerrno>
-#include <cstdio>
 #include <cstring>
 #include <stdexcept>
 #include <system_error>
@@ -89,8 +89,8 @@ void reject_client(int fd, const PeerCred& cred, const char* reason) {
     const std::string msg = std::string("{\"type\":\"error\",\"msg\":\"") + reason + "\"}\n";
     (void)::send(fd, msg.data(), msg.size(), MSG_NOSIGNAL | MSG_DONTWAIT);
     ::close(fd);
-    std::fprintf(stderr, "UnixServer: rejected pid=%d uid=%d: %s\n",
-                 static_cast<int>(cred.pid), static_cast<int>(cred.uid), reason);
+    SN_LOG_WARN("ipc", "client rejected: %s pid=%d uid=%d gid=%d", reason,
+                static_cast<int>(cred.pid), static_cast<int>(cred.uid), static_cast<int>(cred.gid));
 }
 
 } // namespace
@@ -143,7 +143,7 @@ void UnixServer::accept_clients() {
             continue;
         }
         if (errno == EINTR || errno == ECONNABORTED) continue;
-        if (errno != EAGAIN) std::perror("UnixServer: accept4");
+        if (errno != EAGAIN) SN_LOG_ERR("ipc", "accept failed: %s", log::errstr(errno).c_str());
         return;
     }
 }
@@ -153,7 +153,7 @@ void UnixServer::add_client(int fd) {
     ucred cr{};
     socklen_t len = sizeof cr;
     if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cr, &len) < 0) {
-        std::perror("UnixServer: getsockopt(SO_PEERCRED)");
+        SN_LOG_ERR("ipc", "peer credentials failed: %s", log::errstr(errno).c_str());
         ::close(fd);
         return;
     }

@@ -9,10 +9,13 @@ Sht30::Sht30(I2cBus& bus, std::uint16_t address)
 
 int Sht30::start() {
     const std::uint8_t kCmdMeasure[] = {0x24, 0x00};
-    return bus_.write(address_, kCmdMeasure, sizeof kCmdMeasure);
+    start_err_ = bus_.write(address_, kCmdMeasure, sizeof kCmdMeasure);
+    return start_err_;
 }
 
 int Sht30::fetch(Reading& out) {
+    if (start_err_ != 0) return start_err_;
+
     std::uint8_t frame[6];
 
     const int err = bus_.read(address_, frame, sizeof frame);

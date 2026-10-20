@@ -21,6 +21,7 @@ public:
 private:
     I2cBus&       bus_;
     std::uint16_t address_;
+    int           start_err_ = 0;
 };
 
 } // namespace sensornode
