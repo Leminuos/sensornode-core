@@ -41,6 +41,7 @@ std::string or_unknown(const std::optional<int>& v) {
 struct Config {
     bool        fake_installer = false;
     std::string socket_path    = "/run/sensornode/ota.sock";
+    std::string swupdate_tool  = "/usr/bin/09-swupdate-args";
     sensornode::ota::SystemInfo::Paths sys;
 };
 
@@ -51,6 +52,7 @@ void print_usage()
         "\n"
         "  -f, --fake-installer      simulate download/install instead of running SWUpdate\n"
         "  -s, --socket-path PATH    control socket (default: /run/sensornode/ota.sock)\n"
+        "  -t, --swupdate-tool PATH  update launcher, run as 'PATH <url>' (default: /usr/bin/09-swupdate-args)\n"
         "  -w, --sw-versions PATH    firmware version file (default: /etc/sw-versions)\n"
         "  -e, --fw-env-config PATH  U-Boot env config (default: /etc/fw_env.config)\n"
         "  -k, --cmdline PATH        kernel command line (default: /proc/cmdline)\n"
@@ -61,11 +63,12 @@ void print_usage()
 
 bool parse_args(int argc, char* argv[], Config& cfg)
 {
-    static const char short_opts[] = ":fs:w:e:k:hv";
+    static const char short_opts[] = ":fs:t:w:e:k:hv";
 
     static const option long_opts[] = {
         {"fake-installer", no_argument,       nullptr, 'f'},
         {"socket-path",    required_argument, nullptr, 's'},
+        {"swupdate-tool",  required_argument, nullptr, 't'},
         {"sw-versions",    required_argument, nullptr, 'w'},
         {"fw-env-config",  required_argument, nullptr, 'e'},
         {"cmdline",        required_argument, nullptr, 'k'},
@@ -79,6 +82,7 @@ bool parse_args(int argc, char* argv[], Config& cfg)
         switch (opt) {
         case 'f': cfg.fake_installer = true; break;
         case 's': cfg.socket_path = optarg; break;
+        case 't': cfg.swupdate_tool = optarg; break;
         case 'w': cfg.sys.sw_versions = optarg; break;
         case 'e': cfg.sys.fw_env_config = optarg; break;
         case 'k': cfg.sys.cmdline = optarg; break;
@@ -170,8 +174,10 @@ int main(int argc, char* argv[])
         std::unique_ptr<sensornode::ota::Installer> installer;
         if (cfg.fake_installer) {
             installer = sensornode::ota::make_fake_installer(loop);
+            SN_LOG_INFO("ota", "installer=fake");
         } else {
-            SN_LOG_WARN("ota", "no installer backend yet, install disabled (use --fake-installer)");
+            installer = sensornode::ota::make_swupdate_installer(loop, cfg.swupdate_tool);
+            SN_LOG_INFO("ota", "installer=swupdate tool=%s", cfg.swupdate_tool.c_str());
         }
 
         // SWUpdate đã ghi slot kia và chưa reboot, otad restart giữa chừng vẫn phải báo done.

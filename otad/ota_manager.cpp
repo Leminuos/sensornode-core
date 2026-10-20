@@ -66,10 +66,8 @@ OtaManager::OtaManager(std::unique_ptr<Installer> installer, bool reboot_pending
         snap_.percent = 100;
     }
 
-    if (installer_) {
-        installer_->on_progress([this](Phase p, int pct) { handle_progress(p, pct); });
-        installer_->on_finish([this](bool ok, const std::string& err) { handle_finish(ok, err); });
-    }
+    installer_->on_progress([this](Phase p, int pct) { handle_progress(p, pct); });
+    installer_->on_finish([this](bool ok, const std::string& err) { handle_finish(ok, err); });
 }
 
 const char* OtaManager::install(const std::string& url) {
@@ -81,7 +79,6 @@ const char* OtaManager::install(const std::string& url) {
     case OtaState::failed:      break;
     }
 
-    if (!installer_) return "installer not available";
     if (!valid_url(url)) return "invalid url";
 
     snap_.url     = url;

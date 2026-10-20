@@ -101,7 +101,6 @@
  *   | invalid url             | không phải http(s), có khoảng trắng, quá dài   |
  *   | busy                    | đang downloading hoặc installing               |
  *   | reboot pending          | đã cài xong, phải reboot trước khi cài tiếp    |
- *   | installer not available | daemon chạy không có backend cài đặt           |
  *   +-------------------------+------------------------------------------------+
  */
 

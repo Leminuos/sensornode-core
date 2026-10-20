@@ -7,6 +7,7 @@ add_executable(sensornode-otad
     fake_installer.cpp
     ota_manager.cpp
     protocol.cpp
+    swupdate_installer.cpp
     system_info.cpp
 )
 

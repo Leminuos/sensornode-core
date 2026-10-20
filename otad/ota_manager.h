@@ -23,7 +23,6 @@ public:
 
     using ChangeHandler = std::function<void(const Snapshot&)>;
 
-    // installer null nghĩa là chưa có backend, lệnh install bị từ chối.
     OtaManager(std::unique_ptr<Installer> installer, bool reboot_pending);
 
     OtaManager(const OtaManager&) = delete;

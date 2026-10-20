@@ -33,4 +33,7 @@ protected:
 // Giả lập tải + cài bằng timer, url chứa "fail" thì lỗi giữa lúc cài.
 std::unique_ptr<Installer> make_fake_installer(EventLoop& loop);
 
+// Chạy `tool <url>` (09-swupdate-args)
+std::unique_ptr<Installer> make_swupdate_installer(EventLoop& loop, std::string tool);
+
 } // namespace sensornode::ota
