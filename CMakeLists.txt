@@ -6,6 +6,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+include(GNUInstallDirs)
+
 # Một INTERFACE library chỉ mang theo cờ compile/link, không có source.
 # Target nào link vào nó sẽ nhận các cờ này.
 add_library(sensornode_build_flags INTERFACE)
@@ -34,3 +36,4 @@ add_custom_target(sensornode_git_version
 add_subdirectory(common)
 add_subdirectory(telemetryd)
 add_subdirectory(otad)
+add_subdirectory(systemd)

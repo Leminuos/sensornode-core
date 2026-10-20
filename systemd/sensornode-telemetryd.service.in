@@ -1,0 +1,47 @@
+[Unit]
+Description=SensorNode telemetry daemon
+# Cấu hình sai thì dừng hẳn thay vì restart vô hạn.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=notify
+NotifyAccess=main
+EnvironmentFile=-@CMAKE_INSTALL_FULL_SYSCONFDIR@/default/sensornode-telemetryd
+ExecStart=@CMAKE_INSTALL_FULL_BINDIR@/sensornode-telemetryd $TELEMETRYD_ARGS
+User=sensornode
+Group=sensornode
+SupplementaryGroups=i2c
+StateDirectory=sensornode
+ReadWritePaths=/run/sensornode
+
+WatchdogSec=30s
+TimeoutStartSec=30s
+Restart=on-failure
+RestartSec=2s
+RestartPreventExitStatus=2
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+DevicePolicy=closed
+DeviceAllow=char-i2c rw
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=multi-user.target

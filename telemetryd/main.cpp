@@ -1,6 +1,7 @@
 #include "common/event_loop.h"
 #include "common/log.h"
 #include "common/signal_fd.h"
+#include "common/systemd.h"
 #include "common/timer.h"
 #include "common/unix_server.h"
 #include "telemetryd/mqtt_client.h"
@@ -189,6 +190,7 @@ int main(int argc, char *argv[]) {
                 case SIGTERM:
                 case SIGINT:
                     SN_LOG_NOTICE("main", "shutting down signal=SIG%s", sigabbrev_np(signo));
+                    sensornode::systemd::notify("STOPPING=1");
                     loop.stop();
                     break;
                 case SIGHUP:
@@ -236,6 +238,13 @@ int main(int argc, char *argv[]) {
             server.send(id, sensornode::handle_command(line, have_latest ? &latest : nullptr));
         });
 
+        const char* mqtt_state = cfg.mqtt_host.empty() ? "disabled" : "connecting";
+        const auto update_status = [&]() {
+            const std::string st = "STATUS=interval=" + std::to_string(cfg.interval.count()) +
+                                   "ms mqtt=" + mqtt_state;
+            sensornode::systemd::notify(st);
+        };
+
         std::unique_ptr<sensornode::MqttClient> mqtt;
         const std::string topic_base      = "sensornode/" + cfg.node_id;
         const std::string status_topic    = topic_base + "/status";
@@ -253,10 +262,14 @@ int main(int argc, char *argv[]) {
             mqtt->on_connect([&]() {
                 SN_LOG_INFO("mqtt", "connected host=%s port=%d", cfg.mqtt_host.c_str(), cfg.mqtt_port);
                 mqtt->publish(status_topic, "online", 1, true);
+                mqtt_state = "connected";
+                update_status();
             });
             mqtt->on_disconnect([&](const char* reason, std::chrono::seconds retry_in) {
                 SN_LOG_WARN("mqtt", "disconnected: %s retry_in=%llds", reason,
                             static_cast<long long>(retry_in.count()));
+                mqtt_state = "disconnected";
+                update_status();
             });
 
             SN_LOG_INFO("mqtt", "broker host=%s port=%d client_id=%s topic=%s/#",
@@ -267,9 +280,11 @@ int main(int argc, char *argv[]) {
         }
 
         bool measuring = false;
+        auto last_sample_at = sensornode::monotonic_now();
 
         sensornode::Timer measure_done(loop, [&](std::uint64_t) {
             measuring = false;
+            last_sample_at = sensornode::monotonic_now();
             sensornode::Sample s;
             s.ts_ms = sensornode::wall_now_ms();
             sensors->fetch(s);
@@ -325,7 +340,15 @@ int main(int argc, char *argv[]) {
         run_maintenance();
         maintenance.start_periodic(sensornode::kMaintenanceInterval);
 
+        const auto max_sample_gap = 3 * cfg.interval + sensornode::kMeasureTime;
+        sensornode::Watchdog watchdog(loop, [&]() {
+            return sensornode::monotonic_now() - last_sample_at < max_sample_gap;
+        });
+
+        // Báo READY sau khi socket đã listen để client order After= connect được ngay.
         SN_LOG_NOTICE("main", "ready");
+        sensornode::systemd::notify("READY=1");
+        update_status();
         loop.run();
 
         if (mqtt) mqtt->stop();

@@ -30,3 +30,4 @@ target_link_libraries(sensornode-telemetryd
 target_include_directories(sensornode-telemetryd PRIVATE ${SENSORNODE_GENERATED_DIR})
 add_dependencies(sensornode-telemetryd sensornode_git_version)
 
+install(TARGETS sensornode-telemetryd RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

@@ -2,3 +2,5 @@ build/
 build-*/
 *.db
 *.db-*
+oe-logs
+oe-workdir
