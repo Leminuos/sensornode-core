@@ -5,6 +5,8 @@ pkg_check_modules(UBOOTENV REQUIRED IMPORTED_TARGET libubootenv)
 add_executable(sensornode-otad
     main.cpp
     control_server.cpp
+    fake_installer.cpp
+    ota_manager.cpp
     protocol.cpp
     system_info.cpp
 )

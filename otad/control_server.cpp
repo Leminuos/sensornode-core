@@ -16,14 +16,14 @@ UnixServer::Options make_options(const std::string& path) {
 
 } // namespace
 
-ControlServer::ControlServer(EventLoop& loop, const std::string& path, const SystemInfo& sys)
-    : server_(loop, make_options(path)), sys_(sys) {
+ControlServer::ControlServer(EventLoop& loop, const std::string& path, const SystemInfo& sys, OtaManager& ota)
+    : server_(loop, make_options(path)), sys_(sys), ota_(ota) {
     SN_LOG_INFO("ipc", "listening path=%s", path.c_str());
 
     server_.on_connect([this](UnixServer::ClientId id, const PeerCred& p) {
         SN_LOG_INFO("ipc", "client connected cid=%" PRIu64 " pid=%d uid=%d gid=%d", id,
                     static_cast<int>(p.pid), static_cast<int>(p.uid), static_cast<int>(p.gid));
-        server_.send(id, make_hello());
+        server_.send(id, make_hello(ota_.snapshot()));
         return true;
     });
 
@@ -37,11 +37,16 @@ ControlServer::ControlServer(EventLoop& loop, const std::string& path, const Sys
     });
 }
 
+void ControlServer::broadcast(OtaChange change, const Snapshot& ota) {
+    server_.broadcast(make_event(change, ota));
+}
+
 std::string ControlServer::execute(const Command& cmd) {
     switch (cmd.type) {
     case CommandType::invalid: return make_reply(cmd, cmd.error);
     case CommandType::ping:    return make_reply(cmd, Error::none);
-    case CommandType::status:  return make_status_reply(cmd, sys_.read());
+    case CommandType::status:  return make_status_reply(cmd, ota_.snapshot(), sys_.read());
+    case CommandType::install: return make_reply(cmd, ota_.install(cmd.url));
     }
     return make_reply(cmd, Error::unknown_command);
 }

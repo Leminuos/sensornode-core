@@ -23,8 +23,20 @@ const char* to_string(Error e) {
     case Error::invalid_json:        return "invalid json";
     case Error::missing_cmd:         return "missing cmd";
     case Error::unknown_command:     return "unknown command";
+    case Error::invalid_url:         return "invalid url";
+    case Error::busy:                return "busy";
+    case Error::reboot_pending:      return "reboot pending";
+    case Error::trial_boot:          return "trial boot";
     }
     return "unknown error";
+}
+
+const char* to_string(OtaChange c) {
+    switch (c) {
+    case OtaChange::state:     return "state";
+    case OtaChange::progress:  return "progress";
+    }
+    return "unknown";
 }
 
 json status_to_json(const SystemStatus& st) {
@@ -41,6 +53,18 @@ json status_to_json(const SystemStatus& st) {
         {"boot_count",   or_null(st.boot_count)},
         {"boot_limit",   or_null(st.boot_limit)},
         {"errors",       std::move(errors)},
+    };
+}
+
+json ota_to_json(const Snapshot& s) {
+    const bool running = s.state == OtaState::downloading || s.state == OtaState::installing;
+    const bool has_percent = running || s.state == OtaState::done;
+
+    return {
+        {"state",     to_string(s.state)},
+        {"percent",   has_percent ? json(s.percent) : json(nullptr)},
+        {"url",       s.url.empty() ? json(nullptr) : json(s.url)},
+        {"error",     s.error.empty() ? json(nullptr) : json(s.error)},
     };
 }
 
@@ -72,6 +96,13 @@ Command parse_command(const std::string& line) {
         c.type = CommandType::ping;
     } else if (cmd == "status") {
         c.type = CommandType::status;
+    } else if (cmd == "install") {
+        const auto it = req.find("url");
+        if (it == req.end() || !it->is_string() || it->get_ref<const std::string&>().empty()) {
+            return reject(std::move(c), Error::invalid_url);
+        }
+        c.url = it->get<std::string>();
+        c.type = CommandType::install;
     } else {
         return reject(std::move(c), Error::unknown_command);
     }
@@ -85,19 +116,25 @@ std::string make_reply(const Command& cmd, Error err) {
     return to_line(reply);
 }
 
-std::string make_status_reply(const Command& cmd, const SystemStatus& sys) {
+std::string make_status_reply(const Command& cmd, const Snapshot& ota, const SystemStatus& sys) {
     json reply = cmd.reply;
     reply["ok"]     = true;
+    reply["ota"]    = ota_to_json(ota);
     reply["system"] = status_to_json(sys);
     return to_line(reply);
 }
 
-std::string make_hello() {
+std::string make_hello(const Snapshot& ota) {
     return to_line({
         {"type",    "hello"},
         {"daemon",  "otad"},
         {"version", SENSORNODE_VERSION},
+        {"ota",     ota_to_json(ota)},
     });
+}
+
+std::string make_event(OtaChange change, const Snapshot& ota) {
+    return to_line({{"type", to_string(change)}, {"ota", ota_to_json(ota)}});
 }
 
 } // namespace sensornode::ota

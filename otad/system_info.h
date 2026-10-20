@@ -19,6 +19,14 @@ struct SystemStatus {
     std::optional<int>         boot_count;
     std::optional<int>         boot_limit;
     std::vector<Error>         errors;
+
+    bool reboot_pending() const {
+        return running_slot && active_slot && ustate == 1 && *running_slot != *active_slot;
+    }
+
+    bool trial_boot() const {
+        return running_slot && active_slot && ustate == 1 && *running_slot == *active_slot;
+    }
 };
 
 class SystemInfo {

@@ -1,0 +1,53 @@
+#pragma once
+
+#include "otad/installer.h"
+#include "otad/ota_types.h"
+#include "otad/system_info.h"
+
+#include <functional>
+#include <memory>
+#include <string>
+
+namespace sensornode::ota {
+
+class OtaManager {
+public:
+    using ChangeHandler = std::function<void(OtaChange, const Snapshot&)>;
+
+    OtaManager(std::unique_ptr<Installer> installer, const SystemInfo& sys, const SystemStatus& status);
+
+    OtaManager(const OtaManager&) = delete;
+    OtaManager& operator=(const OtaManager&) = delete;
+
+    // Error::none nghĩa là đã nhận lệnh, kết quả báo qua on_change.
+    Error install(const std::string& url) { return dispatch({EventType::install, 0, url}); }
+
+    const Snapshot& snapshot() const noexcept { return snap_; }
+
+    void on_change(ChangeHandler h) { on_change_ = std::move(h); }
+
+private:
+    Error dispatch(const Event& e);
+
+    // Mỗi state một handler, xem bảng ở đầu ota_manager.cpp.
+    Error on_idle(const Event& e);
+    Error on_downloading(const Event& e);
+    Error on_installing(const Event& e);
+    Error on_done(const Event& e);
+    Error on_failed(const Event& e);
+
+    Error begin_install(const std::string& url);
+    void  finish_install();
+    void  fail_install(const std::string& error);
+
+    void enter(OtaState s);
+    void update_percent(int percent);
+    void notify(OtaChange c);
+
+    std::unique_ptr<Installer> installer_;
+    const SystemInfo&          sys_;
+    Snapshot                   snap_;
+    ChangeHandler              on_change_;
+};
+
+} // namespace sensornode::ota

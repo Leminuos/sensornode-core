@@ -3,6 +3,8 @@
 #include "common/signal_fd.h"
 #include "common/systemd.h"
 #include "otad/control_server.h"
+#include "otad/installer.h"
+#include "otad/ota_manager.h"
 #include "otad/system_info.h"
 
 #include "git_version.h"
@@ -17,6 +19,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -153,14 +156,29 @@ int main(int argc, char* argv[])
             });
         });
 
-        sensornode::ota::ControlServer control(loop, cfg.socket_path, sys);
+        auto installer = sensornode::ota::make_fake_installer(loop);
+        sensornode::ota::OtaManager ota(std::move(installer), sys, st);
+        SN_LOG_INFO("ota", "initial state=%s", sensornode::ota::to_string(ota.snapshot().state));
+
+        const auto update_status = [&]() {
+            sensornode::systemd::notify(
+                std::string("STATUS=state=") + sensornode::ota::to_string(ota.snapshot().state) +
+                " sw_version=" + or_unknown(st.sw_version) + " slot=" + or_unknown(st.running_slot));
+        };
+
+        sensornode::ota::ControlServer control(loop, cfg.socket_path, sys, ota);
+
+        ota.on_change([&](sensornode::ota::OtaChange c, const sensornode::ota::Snapshot& s) {
+            control.broadcast(c, s);
+            if (c == sensornode::ota::OtaChange::state) update_status();
+        });
 
         // Chưa có việc background nào để kiểm tra, tick chạy được nghĩa là loop không bị kẹt.
         sensornode::Watchdog watchdog(loop, [] { return true; });
 
         SN_LOG_NOTICE("main", "ready");
         sensornode::systemd::notify("READY=1");
-        sensornode::systemd::notify("STATUS=state=idle");
+        update_status();
         loop.run();
 
         loop.remove(signals.getfd());
