@@ -42,6 +42,7 @@ public:
 private:
     void on_pidfd_ready();
     void read_output();
+    void emit_lines();
     void flush_partial();
     void close_output();
     void reap(ExitStatus& st);
