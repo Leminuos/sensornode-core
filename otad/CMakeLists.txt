@@ -1,15 +1,19 @@
 find_package(nlohmann_json 3.10 REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(UBOOTENV REQUIRED IMPORTED_TARGET libubootenv)
 
 add_executable(sensornode-otad
     main.cpp
     control_server.cpp
     protocol.cpp
+    system_info.cpp
 )
 
 target_link_libraries(sensornode-otad
     PRIVATE
         sensornode_common
         nlohmann_json::nlohmann_json
+        PkgConfig::UBOOTENV
 )
 
 target_include_directories(sensornode-otad PRIVATE ${SENSORNODE_GENERATED_DIR})

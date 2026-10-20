@@ -16,8 +16,8 @@ UnixServer::Options make_options(const std::string& path) {
 
 } // namespace
 
-ControlServer::ControlServer(EventLoop& loop, const std::string& path)
-    : server_(loop, make_options(path)) {
+ControlServer::ControlServer(EventLoop& loop, const std::string& path, const SystemInfo& sys)
+    : server_(loop, make_options(path)), sys_(sys) {
     SN_LOG_INFO("ipc", "listening path=%s", path.c_str());
 
     server_.on_connect([this](UnixServer::ClientId id, const PeerCred& p) {
@@ -41,6 +41,7 @@ std::string ControlServer::execute(const Command& cmd) {
     switch (cmd.type) {
     case CommandType::invalid: return make_reply(cmd, cmd.error);
     case CommandType::ping:    return make_reply(cmd, Error::none);
+    case CommandType::status:  return make_status_reply(cmd, sys_.read());
     }
     return make_reply(cmd, Error::unknown_command);
 }
