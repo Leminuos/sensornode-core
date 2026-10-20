@@ -34,6 +34,7 @@ protected:
 std::unique_ptr<Installer> make_fake_installer(EventLoop& loop);
 
 // Chạy `tool <url>` (09-swupdate-args)
-std::unique_ptr<Installer> make_swupdate_installer(EventLoop& loop, std::string tool);
+std::unique_ptr<Installer> make_swupdate_installer(EventLoop& loop, std::string tool,
+                                                   std::string progress_socket);
 
 } // namespace sensornode::ota

@@ -2,6 +2,7 @@
 
 #include "common/log.h"
 #include "common/process.h"
+#include "otad/swupdate_progress.h"
 
 #include <exception>
 
@@ -11,8 +12,11 @@ namespace {
 
 class SwupdateInstaller final : public Installer {
 public:
-    SwupdateInstaller(EventLoop& loop, std::string tool)
-        : proc_(loop), tool_(std::move(tool)) {
+    SwupdateInstaller(EventLoop& loop, std::string tool, std::string progress_socket)
+        : proc_(loop), progress_(loop, std::move(progress_socket)), tool_(std::move(tool)) {
+        progress_.on_progress([this](Phase p, int pct) {
+            if (on_progress_) on_progress_(p, pct);
+        });
         proc_.on_output([this](const std::string& line) { handle_output(line); });
         proc_.on_exit([this](const Process::ExitStatus& st) { handle_exit(st); });
     }
@@ -27,6 +31,7 @@ public:
         }
         SN_LOG_INFO("swupdate", "spawned pid=%d tool=%s", static_cast<int>(proc_.pid()), tool_.c_str());
         if (on_progress_) on_progress_(Phase::downloading, 0);
+        progress_.start();
     }
 
 private:
@@ -36,6 +41,7 @@ private:
     }
 
     void handle_exit(const Process::ExitStatus& st) {
+        progress_.stop();
         SN_LOG_INFO("swupdate", "finished: %s", st.describe().c_str());
         if (!on_finish_) return;
         if (st.success()) {
@@ -45,15 +51,17 @@ private:
         }
     }
 
-    Process     proc_;
-    std::string tool_;
-    std::string last_error_;
+    Process        proc_;
+    ProgressClient progress_;
+    std::string    tool_;
+    std::string    last_error_;
 };
 
 } // namespace
 
-std::unique_ptr<Installer> make_swupdate_installer(EventLoop& loop, std::string tool) {
-    return std::make_unique<SwupdateInstaller>(loop, std::move(tool));
+std::unique_ptr<Installer> make_swupdate_installer(EventLoop& loop, std::string tool,
+                                                   std::string progress_socket) {
+    return std::make_unique<SwupdateInstaller>(loop, std::move(tool), std::move(progress_socket));
 }
 
 } // namespace sensornode::ota
