@@ -20,11 +20,12 @@
  * 2. Client -> daemon
  * -------------------
  *
- *   +------+--------------------------+
- *   | cmd  | Ý nghĩa                  |
- *   +======+==========================+
- *   | ping | kiểm tra daemon còn sống |
- *   +------+--------------------------+
+ *   +--------+------------------------------------+
+ *   | cmd    | Ý nghĩa                            |
+ *   +========+====================================+
+ *   | ping   | kiểm tra daemon còn sống           |
+ *   | status | version firmware và trạng thái A/B |
+ *   +--------+------------------------------------+
  *
  *
  * 3. Daemon -> client
@@ -36,6 +37,27 @@
  *   reply
  *     {"type":"reply","cmd":"ping","id":1,"ok":true}
  *     {"type":"reply","cmd":"foo","ok":false,"error":"unknown command"}
+ *
+ *   status
+ *     {"type":"reply","cmd":"status","ok":true,"system":{"sw_version":"0.2.0",
+ *      "running_slot":"A","active_slot":"A","ustate":0,"boot_count":0,"boot_limit":3,"errors":[]}}
+ *
+ *   status khi không đọc được một nguồn:
+ *     {...,"system":{...,"active_slot":null,"ustate":null,...,
+ *      "errors":[{"source":"bootenv","error":"open: No such file or directory"}]}}
+ *
+ *   +--------------+------------------------------------------+
+ *   | field        | Nguồn                                    |
+ *   +==============+==========================================+
+ *   | sw_version   | /etc/sw-versions                         |
+ *   | running_slot | root= trong /proc/cmdline                |
+ *   | active_slot  | U-Boot env, slot sẽ boot lần tới         |
+ *   | ustate       | U-Boot env, 1 = đang boot thử bản mới    |
+ *   | boot_count   | U-Boot env, số lần đã boot thử           |
+ *   | boot_limit   | U-Boot env, boot thử quá số này thì lùi  |
+ *   +--------------+------------------------------------------+
+ *
+ *   running_slot khác active_slot nghĩa là đã cài xong bản mới, đang chờ reboot.
  *
  *
  * 4. Lỗi
@@ -64,6 +86,28 @@ std::string to_line(const json& j) {
     return j.dump(-1, ' ', false, json::error_handler_t::replace);
 }
 
+template <typename T>
+json or_null(const std::optional<T>& v) {
+    return v ? json(*v) : json(nullptr);
+}
+
+json status_to_json(const SystemStatus& st) {
+    json errors = json::array();
+    for (const auto& e : st.errors) {
+        errors.push_back({{"source", e.source}, {"error", e.message}});
+    }
+
+    return {
+        {"sw_version",   or_null(st.sw_version)},
+        {"running_slot", or_null(st.running_slot)},
+        {"active_slot",  or_null(st.active_slot)},
+        {"ustate",       or_null(st.ustate)},
+        {"boot_count",   or_null(st.boot_count)},
+        {"boot_limit",   or_null(st.boot_limit)},
+        {"errors",       std::move(errors)},
+    };
+}
+
 json error_reply(json reply, const char* msg) {
     reply["ok"]    = false;
     reply["error"] = msg;
@@ -80,7 +124,7 @@ std::string make_hello() {
     });
 }
 
-std::string handle_command(const std::string& line) {
+std::string handle_command(const std::string& line, const SystemInfo& sys) {
     json reply = {{"type", "reply"}};
 
     const json req = json::parse(line, nullptr, false);
@@ -101,6 +145,9 @@ std::string handle_command(const std::string& line) {
 
     if (cmd == "ping") {
         reply["ok"] = true;
+    } else if (cmd == "status") {
+        reply["ok"]     = true;
+        reply["system"] = status_to_json(sys.read());
     } else {
         return to_line(error_reply(std::move(reply), "unknown command"));
     }

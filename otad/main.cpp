@@ -4,6 +4,7 @@
 #include "common/systemd.h"
 #include "common/unix_server.h"
 #include "otad/protocol.h"
+#include "otad/system_info.h"
 
 #include "git_version.h"
 
@@ -18,6 +19,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <optional>
 #include <string>
 
 namespace {
@@ -25,8 +27,17 @@ namespace {
 bool show_help    = false;
 bool show_version = false;
 
+const char* or_unknown(const std::optional<std::string>& v) {
+    return v ? v->c_str() : "?";
+}
+
+std::string or_unknown(const std::optional<int>& v) {
+    return v ? std::to_string(*v) : "?";
+}
+
 struct Config {
     std::string socket_path = "/run/sensornode/ota.sock";
+    sensornode::ota::SystemInfo::Paths sys;
 };
 
 void print_usage()
@@ -35,6 +46,9 @@ void print_usage()
         "Usage: sensornode-otad [options]\n"
         "\n"
         "  -s, --socket-path PATH    control socket (default: /run/sensornode/ota.sock)\n"
+        "  -w, --sw-versions PATH    firmware version file (default: /etc/sw-versions)\n"
+        "  -e, --fw-env-config PATH  U-Boot env config (default: /etc/fw_env.config)\n"
+        "  -k, --cmdline PATH        kernel command line (default: /proc/cmdline)\n"
         "  -h, --help                show this help\n"
         "  -v, --version             show version\n"
     );
@@ -42,19 +56,25 @@ void print_usage()
 
 bool parse_args(int argc, char* argv[], Config& cfg)
 {
-    static const char short_opts[] = ":s:hv";
+    static const char short_opts[] = ":s:w:e:k:hv";
 
     static const option long_opts[] = {
-        {"socket-path", required_argument, nullptr, 's'},
-        {"help",        no_argument,       nullptr, 'h'},
-        {"version",     no_argument,       nullptr, 'v'},
-        {nullptr,       0,                 nullptr,  0 },
+        {"socket-path",   required_argument, nullptr, 's'},
+        {"sw-versions",   required_argument, nullptr, 'w'},
+        {"fw-env-config", required_argument, nullptr, 'e'},
+        {"cmdline",       required_argument, nullptr, 'k'},
+        {"help",          no_argument,       nullptr, 'h'},
+        {"version",       no_argument,       nullptr, 'v'},
+        {nullptr,         0,                 nullptr,  0 },
     };
 
     int opt;
     while ((opt = getopt_long(argc, argv, short_opts, long_opts, nullptr)) != -1) {
         switch (opt) {
         case 's': cfg.socket_path = optarg; break;
+        case 'w': cfg.sys.sw_versions = optarg; break;
+        case 'e': cfg.sys.fw_env_config = optarg; break;
+        case 'k': cfg.sys.cmdline = optarg; break;
         case 'h': show_help = true; break;
         case 'v': show_version = true; break;
         case ':':
@@ -103,6 +123,17 @@ int main(int argc, char* argv[])
         SN_LOG_NOTICE("main", "starting version=%s git=%s pid=%d",
                       SENSORNODE_VERSION, SENSORNODE_GIT, static_cast<int>(getpid()));
 
+        const sensornode::ota::SystemInfo sys(cfg.sys);
+        const auto st = sys.read();
+        SN_LOG_INFO("sys", "firmware sw_version=%s running_slot=%s active_slot=%s ustate=%s boot_count=%s boot_limit=%s",
+                    or_unknown(st.sw_version), or_unknown(st.running_slot), or_unknown(st.active_slot),
+                    or_unknown(st.ustate).c_str(), or_unknown(st.boot_count).c_str(),
+                    or_unknown(st.boot_limit).c_str());
+        // Không đọc được vẫn chạy tiếp để UI còn hỏi được status và thấy lỗi.
+        for (const auto& e : st.errors) {
+            SN_LOG_WARN("sys", "read failed source=%s: %s", e.source, e.message.c_str());
+        }
+
         sensornode::EventLoop loop;
 
         loop.add(signals.getfd(), EPOLLIN, [&](std::uint32_t) {
@@ -143,7 +174,7 @@ int main(int argc, char* argv[])
         server.on_line([&](sensornode::UnixServer::ClientId id, const std::string& line) {
             SN_LOG_DEBUG("ipc", "line received cid=%" PRIu64 " line=%s", id,
                          sensornode::log::quote(line).c_str());
-            server.send(id, sensornode::ota::handle_command(line));
+            server.send(id, sensornode::ota::handle_command(line, sys));
         });
 
         // Chưa có việc background nào để kiểm tra, tick chạy được nghĩa là loop không bị kẹt.
@@ -151,7 +182,8 @@ int main(int argc, char* argv[])
 
         SN_LOG_NOTICE("main", "ready");
         sensornode::systemd::notify("READY=1");
-        sensornode::systemd::notify("STATUS=state=idle");
+        sensornode::systemd::notify(std::string("STATUS=state=idle sw_version=") +
+                                    or_unknown(st.sw_version) + " slot=" + or_unknown(st.running_slot));
         loop.run();
 
         loop.remove(signals.getfd());
