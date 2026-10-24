@@ -16,6 +16,9 @@ std::string make_state_event(const OtaManager::Snapshot& ota);
 // Message broadcast khi phần trăm tải/cài đổi.
 std::string make_progress_event(const OtaManager::Snapshot& ota);
 
+// Message broadcast khi bản mới (ota.available) thay đổi.
+std::string make_available_event(const OtaManager::Snapshot& ota);
+
 // Xử lý một dòng lệnh từ client và trả về dòng reply
 std::string handle_command(const std::string& line, const SystemInfo& sys, OtaManager& ota);
 

@@ -4,7 +4,7 @@
 #include "common/systemd.h"
 #include "common/timer.h"
 #include "common/unix_server.h"
-#include "telemetryd/mqtt_client.h"
+#include "common/mqtt_client.h"
 #include "telemetryd/protocol.h"
 #include "telemetryd/sensors.h"
 #include "telemetryd/storage.h"

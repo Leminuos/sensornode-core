@@ -35,19 +35,6 @@
 
 namespace sensornode::ota {
 
-namespace {
-
-constexpr std::size_t kMaxUrlLen = 1024;
-
-// 09-swupdate-args ghép url vào tham số swupdate, khoảng trắng sẽ tách thành tham số mới.
-bool valid_url(const std::string& url) {
-    if (url.empty() || url.size() > kMaxUrlLen) return false;
-    if (url.rfind("http://", 0) != 0 && url.rfind("https://", 0) != 0) return false;
-    return std::none_of(url.begin(), url.end(), [](unsigned char c) { return c <= 0x20 || c == 0x7f; });
-}
-
-} // namespace
-
 const char* to_string(OtaState s) {
     switch (s) {
     case OtaState::idle:        return "idle";
@@ -59,8 +46,9 @@ const char* to_string(OtaState s) {
     return "unknown";
 }
 
-OtaManager::OtaManager(std::unique_ptr<Installer> installer, bool reboot_pending)
-    : installer_(std::move(installer)) {
+OtaManager::OtaManager(std::unique_ptr<Installer> installer, bool reboot_pending,
+                       std::optional<std::string> running_version)
+    : installer_(std::move(installer)), running_version_(std::move(running_version)) {
     if (reboot_pending) {
         snap_.state   = OtaState::done;
         snap_.percent = 100;
@@ -79,16 +67,45 @@ const char* OtaManager::install(const std::string& url) {
     case OtaState::failed:      break;
     }
 
-    if (!valid_url(url)) return "invalid url";
+    if (url.empty() && !snap_.available) return "no update available";
+    const std::string target = url.empty() ? snap_.available->url : url;
+    // 09-swupdate-args ghép url vào tham số swupdate, khoảng trắng sẽ tách thành tham số mới.
+    if (!valid_url(target)) return "invalid url";
 
-    snap_.url     = url;
+    snap_.url     = target;
     snap_.error.clear();
     snap_.percent = 0;
-    SN_LOG_NOTICE("ota", "install started url=%s", log::quote(url).c_str());
+    SN_LOG_NOTICE("ota", "install started url=%s", log::quote(target).c_str());
     set_state(OtaState::downloading);
 
-    installer_->start(url);
+    installer_->start(target);
     return nullptr;
+}
+
+void OtaManager::offer(std::optional<Manifest> m) {
+    if (m) {
+        if (!running_version_) {
+            SN_LOG_WARN("ota", "manifest ignored: running version unknown version=%s", m->version.c_str());
+            m.reset();
+        } else if (compare_versions(m->version, *running_version_) <= 0) {
+            SN_LOG_INFO("ota", "manifest not newer version=%s running=%s",
+                        m->version.c_str(), running_version_->c_str());
+            m.reset();
+        }
+    }
+    set_available(std::move(m));
+}
+
+void OtaManager::set_available(std::optional<Manifest> m) {
+    if (m == snap_.available) return;
+    snap_.available = std::move(m);
+    if (snap_.available) {
+        SN_LOG_NOTICE("ota", "update available version=%s url=%s", snap_.available->version.c_str(),
+                      log::quote(snap_.available->url).c_str());
+    } else {
+        SN_LOG_INFO("ota", "no update available");
+    }
+    if (on_available_) on_available_(snap_);
 }
 
 void OtaManager::set_state(OtaState s) {
@@ -118,6 +135,8 @@ void OtaManager::handle_finish(bool ok, const std::string& error) {
     if (ok) {
         snap_.percent = 100;
         SN_LOG_NOTICE("ota", "install succeeded url=%s", log::quote(snap_.url).c_str());
+        // Bản vừa cài không còn là "bản mới" để mời cài nữa.
+        if (snap_.available && snap_.available->url == snap_.url) snap_.available.reset();
         set_state(OtaState::done);
     } else {
         snap_.error = error.empty() ? "unknown error" : error;

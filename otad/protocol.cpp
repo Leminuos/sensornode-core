@@ -9,47 +9,53 @@
  * 1. Luồng message
  * ----------------
  *
- *   +----------+----------------------+--------------------+---------------------+
- *   | type     | Khi nào              | Gửi tới            | Hàm                 |
- *   +==========+======================+====================+=====================+
- *   | hello    | ngay sau khi kết nối | client vừa kết nối | make_hello          |
- *   | reply    | trả lời một lệnh     | client gửi lệnh    | handle_command      |
- *   | state    | đổi trạng thái OTA   | mọi client         | make_state_event    |
- *   | progress | phần trăm thay đổi   | mọi client         | make_progress_event |
- *   +----------+----------------------+--------------------+---------------------+
+ *   +-----------+----------------------+--------------------+----------------------+
+ *   | type      | Khi nào              | Gửi tới            | Hàm                  |
+ *   +===========+======================+====================+======================+
+ *   | hello     | ngay sau khi kết nối | client vừa kết nối | make_hello           |
+ *   | reply     | trả lời một lệnh     | client gửi lệnh    | handle_command       |
+ *   | state     | đổi trạng thái OTA   | mọi client         | make_state_event     |
+ *   | progress  | phần trăm thay đổi   | mọi client         | make_progress_event  |
+ *   | available | bản mới thay đổi     | mọi client         | make_available_event |
+ *   +-----------+----------------------+--------------------+----------------------+
  *
- *   Client nên lấy trạng thái từ hello rồi cập nhật theo state/progress, không cần poll.
+ *   Client nên lấy trạng thái từ hello rồi cập nhật theo các event, không cần poll.
  *
  *
  * 2. Client -> daemon
  * -------------------
  *
- *   +---------+------------------------------------------------------+
- *   | cmd     | Ý nghĩa                                              |
- *   +=========+======================================================+
- *   | ping    | kiểm tra daemon còn sống                             |
- *   | status  | trạng thái OTA, version firmware và trạng thái A/B   |
- *   | install | tải và cài .swu từ url, kết quả báo qua state events |
- *   +---------+------------------------------------------------------+
+ *   +---------+--------------------------------------------------------------+
+ *   | cmd     | Ý nghĩa                                                      |
+ *   +=========+==============================================================+
+ *   | ping    | kiểm tra daemon còn sống                                     |
+ *   | status  | trạng thái OTA, version firmware và trạng thái A/B           |
+ *   | install | cài .swu từ url, không có url thì cài bản ota.available      |
+ *   +---------+--------------------------------------------------------------+
  *
  *   install
+ *     {"cmd":"install","id":3}
  *     {"cmd":"install","id":3,"url":"http://192.168.137.10:8000/release/x-0.2.0.swu"}
  *
  *
  * 3. Daemon -> client
  * -------------------
  *
- *   ota (object dùng chung trong hello, status, state, progress)
- *     {"state":"downloading","percent":40,"url":"http://...","error":null}
+ *   ota (object dùng chung trong hello, status và mọi event)
+ *     {"state":"downloading","percent":40,"url":"http://...","error":null,
+ *      "available":{"version":"0.3.0","url":"http://...","size":47127040,"sha256":"075b..."}}
  *
- *   +---------+-------------------------------------------------------------+
- *   | field   | Ý nghĩa                                                     |
- *   +=========+=============================================================+
- *   | state   | idle, downloading, installing, done, failed                 |
- *   | percent | 0..100 khi downloading/installing, 100 ở done, còn lại null |
- *   | url     | url của lần cài gần nhất, null nếu chưa cài lần nào         |
- *   | error   | lý do lỗi khi state là failed, còn lại null                 |
- *   +---------+-------------------------------------------------------------+
+ *   +-----------+-------------------------------------------------------------+
+ *   | field     | Ý nghĩa                                                     |
+ *   +===========+=============================================================+
+ *   | state     | idle, downloading, installing, done, failed                 |
+ *   | percent   | 0..100 khi downloading/installing, 100 ở done, còn lại null |
+ *   | url       | url của lần cài gần nhất, null nếu chưa cài lần nào         |
+ *   | error     | lý do lỗi khi state là failed, còn lại null                 |
+ *   | available | manifest MQTT mới hơn sw_version, null nếu không có         |
+ *   +-----------+-------------------------------------------------------------+
+ *
+ *   available độc lập với state: failed vẫn có thể có bản mới để cài lại.
  *
  *   hello
  *     {"type":"hello","daemon":"otad","version":"0.1.0","ota":{"state":"idle",...}}
@@ -97,8 +103,8 @@
  *   | invalid json            | dòng không phải object JSON                    |
  *   | missing cmd             | thiếu cmd hoặc không phải chuỗi                |
  *   | unknown command         | cmd không được hỗ trợ                          |
- *   | missing url             | install thiếu url hoặc không phải chuỗi        |
- *   | invalid url             | không phải http(s), có khoảng trắng, quá dài   |
+ *   | no update available     | install không có url và chưa có ota.available  |
+ *   | invalid url             | không phải chuỗi http(s), có khoảng trắng, dài |
  *   | busy                    | đang downloading hoặc installing               |
  *   | reboot pending          | đã cài xong, phải reboot trước khi cài tiếp    |
  *   +-------------------------+------------------------------------------------+
@@ -140,15 +146,26 @@ json status_to_json(const SystemStatus& st) {
     };
 }
 
+json manifest_to_json(const std::optional<Manifest>& m) {
+    if (!m) return nullptr;
+    return {
+        {"version", m->version},
+        {"url",     m->url},
+        {"size",    or_null(m->size)},
+        {"sha256",  m->sha256.empty() ? json(nullptr) : json(m->sha256)},
+    };
+}
+
 json ota_to_json(const OtaManager::Snapshot& s) {
     const bool running = s.state == OtaState::downloading || s.state == OtaState::installing;
     const bool has_percent = running || s.state == OtaState::done;
 
     return {
-        {"state",   to_string(s.state)},
-        {"percent", has_percent ? json(s.percent) : json(nullptr)},
-        {"url",     s.url.empty() ? json(nullptr) : json(s.url)},
-        {"error",   s.state == OtaState::failed ? json(s.error) : json(nullptr)},
+        {"state",     to_string(s.state)},
+        {"percent",   has_percent ? json(s.percent) : json(nullptr)},
+        {"url",       s.url.empty() ? json(nullptr) : json(s.url)},
+        {"error",     s.state == OtaState::failed ? json(s.error) : json(nullptr)},
+        {"available", manifest_to_json(s.available)},
     };
 }
 
@@ -177,6 +194,10 @@ std::string make_progress_event(const OtaManager::Snapshot& ota) {
     return to_line({{"type", "progress"}, {"ota", ota_to_json(ota)}});
 }
 
+std::string make_available_event(const OtaManager::Snapshot& ota) {
+    return to_line({{"type", "available"}, {"ota", ota_to_json(ota)}});
+}
+
 std::string handle_command(const std::string& line, const SystemInfo& sys, OtaManager& ota) {
     json reply = {{"type", "reply"}};
 
@@ -203,12 +224,15 @@ std::string handle_command(const std::string& line, const SystemInfo& sys, OtaMa
         reply["ota"]    = ota_to_json(ota.snapshot());
         reply["system"] = status_to_json(sys.read());
     } else if (cmd == "install") {
-        const auto url = req.find("url");
-        if (url == req.end() || !url->is_string()) {
-            return to_line(error_reply(std::move(reply), "missing url"));
+        // Không có url thì cài bản available từ manifest.
+        std::string url;
+        if (const auto it = req.find("url"); it != req.end()) {
+            if (!it->is_string()) return to_line(error_reply(std::move(reply), "invalid url"));
+            url = it->get<std::string>();
+            if (url.empty()) return to_line(error_reply(std::move(reply), "invalid url"));
         }
         // Reply chỉ báo đã nhận lệnh, state event có thể đã được broadcast trước reply này.
-        if (const char* err = ota.install(url->get_ref<const std::string&>())) {
+        if (const char* err = ota.install(url)) {
             return to_line(error_reply(std::move(reply), err));
         }
         reply["ok"] = true;
