@@ -1,0 +1,43 @@
+[Unit]
+Description=SensorNode OTA daemon
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=notify
+NotifyAccess=main
+EnvironmentFile=-@CMAKE_INSTALL_FULL_SYSCONFDIR@/default/sensornode-otad
+ExecStart=@CMAKE_INSTALL_FULL_BINDIR@/sensornode-otad $OTAD_ARGS
+
+# Root vì SWUpdate ghi thẳng block device của slot và U-Boot env trên mmcblk0.
+WatchdogSec=30s
+TimeoutStartSec=30s
+Restart=on-failure
+RestartSec=2s
+RestartPreventExitStatus=2
+
+# Mặc định control-group: dừng otad thì swupdate con cũng bị kill. An toàn vì SWUpdate chỉ
+# ghi slot không chạy và chỉ ghi bootenv khi đã cài xong. Không đổi sang KillMode=process.
+KillMode=control-group
+
+# /tmp riêng: SWUpdate lưu image và mở /tmp/swupdateprog trong namespace của otad.
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+NoNewPrivileges=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+DevicePolicy=closed
+DeviceAllow=block-mmc rw
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

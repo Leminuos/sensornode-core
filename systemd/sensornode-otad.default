@@ -1,0 +1,5 @@
+# Tham số dòng lệnh cho sensornode-otad
+OTAD_ARGS=""
+#OTAD_ARGS="--mqtt-host 192.168.1.10"
+
+#SENSORNODE_LOG_LEVEL=debug
