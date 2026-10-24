@@ -37,3 +37,6 @@ add_subdirectory(common)
 add_subdirectory(telemetryd)
 add_subdirectory(otad)
 add_subdirectory(systemd)
+
+enable_testing()
+add_subdirectory(tests)

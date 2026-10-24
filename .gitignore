@@ -4,3 +4,5 @@ build-*/
 *.db-*
 oe-logs
 oe-workdir
+__pycache__/
+*.pyc
