@@ -9,7 +9,7 @@
 
 namespace sensornode::ota {
 
-enum class CommandType { invalid, ping, status, install };
+enum class CommandType { invalid, ping, status, install, reboot };
 
 struct Command {
     CommandType    type  = CommandType::invalid;

@@ -9,6 +9,7 @@ add_executable(sensornode-otad
     manifest.cpp
     ota_manager.cpp
     protocol.cpp
+    rebooter.cpp
     swupdate_installer.cpp
     swupdate_progress.cpp
     system_info.cpp

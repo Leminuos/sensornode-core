@@ -8,7 +8,7 @@
 
 namespace sensornode::ota {
 
-enum class OtaState { idle, downloading, installing, done, failed };
+enum class OtaState { idle, downloading, installing, done, failed, rebooting };
 
 const char* to_string(OtaState s);
 
@@ -21,15 +21,19 @@ enum class Error {
     invalid_url,
     busy,
     reboot_pending,
+    no_update_installed,
+    already_rebooting,
     trial_boot,
 };
 
 enum class EventType {
     install,
+    reboot,
     download_progress,
     install_progress,
     install_ok,
     install_failed,
+    reboot_failed,
 };
 
 struct Event {

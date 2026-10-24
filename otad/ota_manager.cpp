@@ -5,12 +5,12 @@
  *   +------+  install   +-------------+  install_progress  +------------+  install_ok  +------+
  *   | idle | ---------> | downloading | -----------------> | installing | -----------> | done |
  *   +------+            +-------------+                    +------------+              +------+
- *                          ^     |                               |
- *                          |     | install_failed                | install_failed
- *                  install |     v                               |
- *                          | +--------+                          |
- *                          +-| failed | <------------------------+
- *                            +--------+
+ *                          ^     |                               |                        |  ^
+ *                          |     | install_failed                | install_failed  reboot |  | reboot_failed
+ *                  install |     v                               |                        v  |
+ *                          | +--------+                          |                   +-----------+
+ *                          +-| failed | <------------------------+                   | rebooting |
+ *                            +--------+                                              +-----------+
  */
 
 #include "otad/ota_manager.h"
@@ -28,12 +28,15 @@ const char* to_string(OtaState s) {
     case OtaState::installing:  return "installing";
     case OtaState::done:        return "done";
     case OtaState::failed:      return "failed";
+    case OtaState::rebooting:   return "rebooting";
     }
     return "unknown";
 }
 
-OtaManager::OtaManager(std::unique_ptr<Installer> installer, const SystemInfo& sys, const SystemStatus& status)
+OtaManager::OtaManager(std::unique_ptr<Installer> installer, std::unique_ptr<Rebooter> rebooter,
+                       const SystemInfo& sys, const SystemStatus& status)
     : installer_(std::move(installer)),
+      rebooter_(std::move(rebooter)),
       sys_(sys),
       running_version_(status.sw_version) {
     if (status.reboot_pending()) {
@@ -42,6 +45,7 @@ OtaManager::OtaManager(std::unique_ptr<Installer> installer, const SystemInfo& s
     }
 
     installer_->on_event([this](const Event& e) { dispatch(e); });
+    rebooter_->on_event([this](const Event& e) { dispatch(e); });
 }
 
 Error OtaManager::dispatch(const Event& e) {
@@ -51,6 +55,7 @@ Error OtaManager::dispatch(const Event& e) {
     case OtaState::installing:  return on_installing(e);
     case OtaState::done:        return on_done(e);
     case OtaState::failed:      return on_failed(e);
+    case OtaState::rebooting:   return on_rebooting(e);
     }
     return Error::none;
 }
@@ -58,10 +63,12 @@ Error OtaManager::dispatch(const Event& e) {
 Error OtaManager::on_idle(const Event& e) {
     switch (e.type) {
     case EventType::install: return begin_install(e.text);
+    case EventType::reboot:  return Error::no_update_installed;
     case EventType::download_progress:
     case EventType::install_progress:
     case EventType::install_ok:
     case EventType::install_failed:
+    case EventType::reboot_failed:
         break;
     }
     return Error::none;
@@ -70,6 +77,7 @@ Error OtaManager::on_idle(const Event& e) {
 Error OtaManager::on_downloading(const Event& e) {
     switch (e.type) {
     case EventType::install:
+    case EventType::reboot:
         return Error::busy;
     case EventType::download_progress:
         update_percent(e.percent);
@@ -84,6 +92,8 @@ Error OtaManager::on_downloading(const Event& e) {
     case EventType::install_failed:
         fail_install(e.text);
         break;
+    case EventType::reboot_failed:
+        break;
     }
     return Error::none;
 }
@@ -91,6 +101,7 @@ Error OtaManager::on_downloading(const Event& e) {
 Error OtaManager::on_installing(const Event& e) {
     switch (e.type) {
     case EventType::install:
+    case EventType::reboot:
         return Error::busy;
     case EventType::install_progress:
         update_percent(e.percent);
@@ -102,6 +113,7 @@ Error OtaManager::on_installing(const Event& e) {
         fail_install(e.text);
         break;
     case EventType::download_progress:
+    case EventType::reboot_failed:
         break;
     }
     return Error::none;
@@ -111,10 +123,14 @@ Error OtaManager::on_done(const Event& e) {
     switch (e.type) {
     case EventType::install:
         return Error::reboot_pending;
+    case EventType::reboot:
+        begin_reboot();
+        break;
     case EventType::download_progress:
     case EventType::install_progress:
     case EventType::install_ok:
     case EventType::install_failed:
+    case EventType::reboot_failed:
         break;
     }
     return Error::none;
@@ -122,6 +138,24 @@ Error OtaManager::on_done(const Event& e) {
 
 Error OtaManager::on_failed(const Event& e) {
     return on_idle(e);
+}
+
+Error OtaManager::on_rebooting(const Event& e) {
+    switch (e.type) {
+    case EventType::install:
+        return Error::reboot_pending;
+    case EventType::reboot:
+        return Error::already_rebooting;
+    case EventType::reboot_failed:
+        fail_reboot(e.text);
+        break;
+    case EventType::download_progress:
+    case EventType::install_progress:
+    case EventType::install_ok:
+    case EventType::install_failed:
+        break;
+    }
+    return Error::none;
 }
 
 Error OtaManager::begin_install(const std::string& url) {
@@ -141,6 +175,15 @@ Error OtaManager::begin_install(const std::string& url) {
     return Error::none;
 }
 
+void OtaManager::begin_reboot() {
+    snap_.error.clear();
+    SN_LOG_NOTICE("ota", "reboot requested");
+    enter(OtaState::rebooting);
+
+    std::string error;
+    if (!rebooter_->start(error)) fail_reboot(error);
+}
+
 void OtaManager::finish_install() {
     snap_.percent = 100;
     SN_LOG_NOTICE("ota", "install succeeded url=%s", log::quote(snap_.url).c_str());
@@ -152,6 +195,12 @@ void OtaManager::fail_install(const std::string& error) {
     snap_.error = error.empty() ? "unknown error" : error;
     SN_LOG_ERR("ota", "install failed: %s url=%s", snap_.error.c_str(), log::quote(snap_.url).c_str());
     enter(OtaState::failed);
+}
+
+void OtaManager::fail_reboot(const std::string& error) {
+    snap_.error = "reboot failed: " + error;
+    SN_LOG_ERR("ota", "%s", snap_.error.c_str());
+    enter(OtaState::done);
 }
 
 void OtaManager::enter(OtaState s) {

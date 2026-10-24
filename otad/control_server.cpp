@@ -47,6 +47,7 @@ std::string ControlServer::execute(const Command& cmd) {
     case CommandType::ping:    return make_reply(cmd, Error::none);
     case CommandType::status:  return make_status_reply(cmd, ota_.snapshot(), sys_.read());
     case CommandType::install: return make_reply(cmd, ota_.install(cmd.url));
+    case CommandType::reboot:  return make_reply(cmd, ota_.reboot());
     }
     return make_reply(cmd, Error::unknown_command);
 }

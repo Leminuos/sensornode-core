@@ -7,6 +7,7 @@
 #include "otad/installer.h"
 #include "otad/manifest.h"
 #include "otad/ota_manager.h"
+#include "otad/rebooter.h"
 #include "otad/system_info.h"
 
 #include "git_version.h"
@@ -25,7 +26,9 @@
 #include <exception>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -49,11 +52,19 @@ bool parse_port(const char* s, int& out) {
     return true;
 }
 
+std::vector<std::string> split_words(const std::string& s) {
+    std::istringstream in(s);
+    std::vector<std::string> words;
+    for (std::string w; in >> w;) words.push_back(w);
+    return words;
+}
+
 struct Config {
     bool        fake_installer = false;
     std::string socket_path    = "/run/sensornode/ota.sock";
     std::string swupdate_tool  = "/usr/bin/09-swupdate-args";
     std::string progress_sock  = "/tmp/swupdateprog";
+    std::string reboot_cmd     = "systemctl reboot";
     std::string mqtt_host;
     int         mqtt_port      = 1883;
     std::string mqtt_topic     = "ota/latest";
@@ -69,6 +80,7 @@ void print_usage()
         "  -s, --socket-path PATH      control socket (default: /run/sensornode/ota.sock)\n"
         "  -t, --swupdate-tool PATH    update launcher, run as 'PATH <url>' (default: /usr/bin/09-swupdate-args)\n"
         "  -p, --progress-socket PATH  SWUpdate progress socket (default: /tmp/swupdateprog)\n"
+        "  -r, --reboot-cmd CMD        reboot command, split on spaces (default: systemctl reboot)\n"
         "  -w, --sw-versions PATH      firmware version file (default: /etc/sw-versions)\n"
         "  -e, --fw-env-config PATH    U-Boot env config (default: /etc/fw_env.config)\n"
         "  -k, --cmdline PATH          kernel command line (default: /proc/cmdline)\n"
@@ -82,13 +94,14 @@ void print_usage()
 
 bool parse_args(int argc, char* argv[], Config& cfg)
 {
-    static const char short_opts[] = ":fs:t:p:w:e:k:m:P:T:hv";
+    static const char short_opts[] = ":fs:t:p:r:w:e:k:m:P:T:hv";
 
     static const option long_opts[] = {
         {"fake-installer",  no_argument,       nullptr, 'f'},
         {"socket-path",     required_argument, nullptr, 's'},
         {"swupdate-tool",   required_argument, nullptr, 't'},
         {"progress-socket", required_argument, nullptr, 'p'},
+        {"reboot-cmd",      required_argument, nullptr, 'r'},
         {"sw-versions",     required_argument, nullptr, 'w'},
         {"fw-env-config",   required_argument, nullptr, 'e'},
         {"cmdline",         required_argument, nullptr, 'k'},
@@ -107,6 +120,7 @@ bool parse_args(int argc, char* argv[], Config& cfg)
         case 's': cfg.socket_path = optarg; break;
         case 't': cfg.swupdate_tool = optarg; break;
         case 'p': cfg.progress_sock = optarg; break;
+        case 'r': cfg.reboot_cmd = optarg; break;
         case 'w': cfg.sys.sw_versions = optarg; break;
         case 'e': cfg.sys.fw_env_config = optarg; break;
         case 'k': cfg.sys.cmdline = optarg; break;
@@ -130,6 +144,11 @@ bool parse_args(int argc, char* argv[], Config& cfg)
             print_usage();
             return false;
         }
+    }
+
+    if (split_words(cfg.reboot_cmd).empty()) {
+        std::fprintf(stderr, "%s: --reboot-cmd must not be empty\n", argv[0]);
+        return false;
     }
 
     if (optind < argc) {
@@ -207,7 +226,8 @@ int main(int argc, char* argv[])
             SN_LOG_INFO("ota", "installer=swupdate tool=%s progress=%s", cfg.swupdate_tool.c_str(), cfg.progress_sock.c_str());
         }
 
-        sensornode::ota::OtaManager ota(std::move(installer), sys, st);
+        auto rebooter = std::make_unique<sensornode::ota::Rebooter>(loop, split_words(cfg.reboot_cmd));
+        sensornode::ota::OtaManager ota(std::move(installer), std::move(rebooter), sys, st);
         SN_LOG_INFO("ota", "initial state=%s", sensornode::ota::to_string(ota.snapshot().state));
 
         const auto update_status = [&]() {

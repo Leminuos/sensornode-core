@@ -27,6 +27,8 @@ const char* to_string(Error e) {
     case Error::invalid_url:         return "invalid url";
     case Error::busy:                return "busy";
     case Error::reboot_pending:      return "reboot pending";
+    case Error::no_update_installed: return "no update installed";
+    case Error::already_rebooting:   return "already rebooting";
     case Error::trial_boot:          return "trial boot";
     }
     return "unknown error";
@@ -70,7 +72,7 @@ json manifest_to_json(const std::optional<Manifest>& m) {
 
 json ota_to_json(const Snapshot& s) {
     const bool running = s.state == OtaState::downloading || s.state == OtaState::installing;
-    const bool has_percent = running || s.state == OtaState::done;
+    const bool has_percent = running || s.state == OtaState::done || s.state == OtaState::rebooting;
 
     return {
         {"state",     to_string(s.state)},
@@ -117,6 +119,8 @@ Command parse_command(const std::string& line) {
             c.url = it->get<std::string>();
         }
         c.type = CommandType::install;
+    } else if (cmd == "reboot") {
+        c.type = CommandType::reboot;
     } else {
         return reject(std::move(c), Error::unknown_command);
     }
