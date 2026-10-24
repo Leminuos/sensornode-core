@@ -1,5 +1,6 @@
-#include "telemetryd/mqtt_client.h"
+#include "common/mqtt_client.h"
 #include "common/event_loop.h"
+#include "common/log.h"
 
 #include <mosquitto.h>
 #include <sys/epoll.h>
@@ -40,6 +41,7 @@ MqttClient::MqttClient(EventLoop& loop, Options opts)
 
     mosquitto_connect_callback_set(mosq_, &MqttClient::handle_connect);
     mosquitto_disconnect_callback_set(mosq_, &MqttClient::handle_disconnect);
+    mosquitto_message_callback_set(mosq_, &MqttClient::handle_message);
 
     // Đăng ký Last Will với thư viện, gửi kèm packet CONNECT ở mỗi lần kết nối.
     if (!opts_.will_topic.empty()) {
@@ -97,6 +99,10 @@ bool MqttClient::publish(const std::string& topic, std::string_view payload, int
 
     update_events();
     return rc == MOSQ_ERR_SUCCESS;
+}
+
+void MqttClient::subscribe(std::string topic, int qos) {
+    subscriptions_.emplace_back(std::move(topic), qos);
 }
 
 // Mở kết nối TCP non-blocking, CONNECT được gửi khi socket ghi được.
@@ -182,7 +188,25 @@ void MqttClient::handle_connect(mosquitto*, void* self, int rc) {
 
     c->connected_ = true;
     c->backoff_   = c->opts_.min_backoff;
+
+    for (const auto& [topic, qos] : c->subscriptions_) {
+        const int src = mosquitto_subscribe(c->mosq_, nullptr, topic.c_str(), qos);
+        if (src != MOSQ_ERR_SUCCESS) {
+            SN_LOG_ERR("mqtt", "subscribe failed: %s topic=%s", mosquitto_strerror(src), topic.c_str());
+        }
+    }
+    c->update_events();
+
     if (c->on_connect_) c->on_connect_();
+}
+
+void MqttClient::handle_message(mosquitto*, void* self, const mosquitto_message* msg) {
+    auto* c = static_cast<MqttClient*>(self);
+    if (!c->on_message_) return;
+
+    const std::string_view payload(static_cast<const char*>(msg->payload),
+                                   static_cast<std::size_t>(msg->payloadlen));
+    c->on_message_(msg->topic, payload, msg->retain);
 }
 
 void MqttClient::handle_disconnect(mosquitto*, void* self, int rc) {

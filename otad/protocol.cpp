@@ -23,6 +23,7 @@ const char* to_string(Error e) {
     case Error::invalid_json:        return "invalid json";
     case Error::missing_cmd:         return "missing cmd";
     case Error::unknown_command:     return "unknown command";
+    case Error::no_update_available: return "no update available";
     case Error::invalid_url:         return "invalid url";
     case Error::busy:                return "busy";
     case Error::reboot_pending:      return "reboot pending";
@@ -35,6 +36,7 @@ const char* to_string(OtaChange c) {
     switch (c) {
     case OtaChange::state:     return "state";
     case OtaChange::progress:  return "progress";
+    case OtaChange::available: return "available";
     }
     return "unknown";
 }
@@ -56,6 +58,16 @@ json status_to_json(const SystemStatus& st) {
     };
 }
 
+json manifest_to_json(const std::optional<Manifest>& m) {
+    if (!m) return nullptr;
+    return {
+        {"version", m->version},
+        {"url",     m->url},
+        {"size",    or_null(m->size)},
+        {"sha256",  m->sha256.empty() ? json(nullptr) : json(m->sha256)},
+    };
+}
+
 json ota_to_json(const Snapshot& s) {
     const bool running = s.state == OtaState::downloading || s.state == OtaState::installing;
     const bool has_percent = running || s.state == OtaState::done;
@@ -65,6 +77,7 @@ json ota_to_json(const Snapshot& s) {
         {"percent",   has_percent ? json(s.percent) : json(nullptr)},
         {"url",       s.url.empty() ? json(nullptr) : json(s.url)},
         {"error",     s.error.empty() ? json(nullptr) : json(s.error)},
+        {"available", manifest_to_json(s.available)},
     };
 }
 
@@ -97,11 +110,12 @@ Command parse_command(const std::string& line) {
     } else if (cmd == "status") {
         c.type = CommandType::status;
     } else if (cmd == "install") {
-        const auto it = req.find("url");
-        if (it == req.end() || !it->is_string() || it->get_ref<const std::string&>().empty()) {
-            return reject(std::move(c), Error::invalid_url);
+        if (const auto it = req.find("url"); it != req.end()) {
+            if (!it->is_string() || it->get_ref<const std::string&>().empty()) {
+                return reject(std::move(c), Error::invalid_url);
+            }
+            c.url = it->get<std::string>();
         }
-        c.url = it->get<std::string>();
         c.type = CommandType::install;
     } else {
         return reject(std::move(c), Error::unknown_command);

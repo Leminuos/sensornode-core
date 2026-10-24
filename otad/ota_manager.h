@@ -6,6 +6,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace sensornode::ota {
@@ -19,8 +20,11 @@ public:
     OtaManager(const OtaManager&) = delete;
     OtaManager& operator=(const OtaManager&) = delete;
 
-    // Error::none nghĩa là đã nhận lệnh, kết quả báo qua on_change.
+    // url rỗng thì cài bản available. Error::none nghĩa là đã nhận lệnh, kết quả báo qua on_change.
     Error install(const std::string& url) { return dispatch({EventType::install, 0, url}); }
+
+    // Manifest mới nhận, nullopt khi manifest bị xoá; chỉ giữ nếu mới hơn bản đang chạy.
+    void offer(std::optional<Manifest> m);
 
     const Snapshot& snapshot() const noexcept { return snap_; }
 
@@ -42,10 +46,12 @@ private:
 
     void enter(OtaState s);
     void update_percent(int percent);
+    void set_available(std::optional<Manifest> m);
     void notify(OtaChange c);
 
     std::unique_ptr<Installer> installer_;
     const SystemInfo&          sys_;
+    std::optional<std::string> running_version_;
     Snapshot                   snap_;
     ChangeHandler              on_change_;
 };

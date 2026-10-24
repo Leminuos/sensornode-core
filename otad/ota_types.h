@@ -1,6 +1,9 @@
 #pragma once
 
+#include "otad/manifest.h"
+
 #include <functional>
+#include <optional>
 #include <string>
 
 namespace sensornode::ota {
@@ -14,6 +17,7 @@ enum class Error {
     invalid_json,
     missing_cmd,
     unknown_command,
+    no_update_available,
     invalid_url,
     busy,
     reboot_pending,
@@ -41,8 +45,9 @@ struct Snapshot {
     int         percent = 0;
     std::string url;
     std::string error;
+    std::optional<Manifest> available;
 };
 
-enum class OtaChange { state, progress };
+enum class OtaChange { state, progress, available };
 
 } // namespace sensornode::ota

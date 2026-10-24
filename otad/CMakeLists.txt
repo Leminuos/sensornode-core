@@ -6,6 +6,7 @@ add_executable(sensornode-otad
     main.cpp
     control_server.cpp
     fake_installer.cpp
+    manifest.cpp
     ota_manager.cpp
     protocol.cpp
     swupdate_installer.cpp

@@ -1,9 +1,11 @@
 #include "common/event_loop.h"
 #include "common/log.h"
+#include "common/mqtt_client.h"
 #include "common/signal_fd.h"
 #include "common/systemd.h"
 #include "otad/control_server.h"
 #include "otad/installer.h"
+#include "otad/manifest.h"
 #include "otad/ota_manager.h"
 #include "otad/system_info.h"
 
@@ -13,6 +15,8 @@
 #include <sys/epoll.h>
 #include <unistd.h>
 
+#include <cerrno>
+#include <chrono>
 #include <csignal>
 #include <cstdint>
 #include <cstdio>
@@ -36,11 +40,23 @@ std::string or_unknown(const std::optional<int>& v) {
     return v ? std::to_string(*v) : "?";
 }
 
+bool parse_port(const char* s, int& out) {
+    errno = 0;
+    char* end = nullptr;
+    const long v = std::strtol(s, &end, 10);
+    if (errno != 0 || end == s || *end != '\0' || v <= 0 || v > 65535) return false;
+    out = static_cast<int>(v);
+    return true;
+}
+
 struct Config {
     bool        fake_installer = false;
     std::string socket_path    = "/run/sensornode/ota.sock";
     std::string swupdate_tool  = "/usr/bin/09-swupdate-args";
     std::string progress_sock  = "/tmp/swupdateprog";
+    std::string mqtt_host;
+    int         mqtt_port      = 1883;
+    std::string mqtt_topic     = "ota/latest";
     sensornode::ota::SystemInfo::Paths sys;
 };
 
@@ -56,6 +72,9 @@ void print_usage()
         "  -w, --sw-versions PATH      firmware version file (default: /etc/sw-versions)\n"
         "  -e, --fw-env-config PATH    U-Boot env config (default: /etc/fw_env.config)\n"
         "  -k, --cmdline PATH          kernel command line (default: /proc/cmdline)\n"
+        "  -m, --mqtt-host HOST        MQTT broker for update manifests (default: MQTT disabled)\n"
+        "  -P, --mqtt-port PORT        MQTT broker port (default: 1883)\n"
+        "  -T, --mqtt-topic TOPIC      manifest topic (default: ota/latest)\n"
         "  -h, --help                  show this help\n"
         "  -v, --version               show version\n"
     );
@@ -63,7 +82,7 @@ void print_usage()
 
 bool parse_args(int argc, char* argv[], Config& cfg)
 {
-    static const char short_opts[] = ":fs:t:p:w:e:k:hv";
+    static const char short_opts[] = ":fs:t:p:w:e:k:m:P:T:hv";
 
     static const option long_opts[] = {
         {"fake-installer",  no_argument,       nullptr, 'f'},
@@ -73,6 +92,9 @@ bool parse_args(int argc, char* argv[], Config& cfg)
         {"sw-versions",     required_argument, nullptr, 'w'},
         {"fw-env-config",   required_argument, nullptr, 'e'},
         {"cmdline",         required_argument, nullptr, 'k'},
+        {"mqtt-host",       required_argument, nullptr, 'm'},
+        {"mqtt-port",       required_argument, nullptr, 'P'},
+        {"mqtt-topic",      required_argument, nullptr, 'T'},
         {"help",            no_argument,       nullptr, 'h'},
         {"version",         no_argument,       nullptr, 'v'},
         {nullptr,           0,                 nullptr,  0 },
@@ -88,6 +110,14 @@ bool parse_args(int argc, char* argv[], Config& cfg)
         case 'w': cfg.sys.sw_versions = optarg; break;
         case 'e': cfg.sys.fw_env_config = optarg; break;
         case 'k': cfg.sys.cmdline = optarg; break;
+        case 'm': cfg.mqtt_host = optarg; break;
+        case 'P':
+            if (!parse_port(optarg, cfg.mqtt_port)) {
+                std::fprintf(stderr, "%s: invalid --mqtt-port '%s'\n", argv[0], optarg);
+                return false;
+            }
+            break;
+        case 'T': cfg.mqtt_topic = optarg; break;
         case 'h': show_help = true; break;
         case 'v': show_version = true; break;
         case ':':
@@ -193,6 +223,49 @@ int main(int argc, char* argv[])
             if (c == sensornode::ota::OtaChange::state) update_status();
         });
 
+        std::unique_ptr<sensornode::MqttClient> mqtt;
+        if (!cfg.mqtt_host.empty()) {
+            char host[256] = {};
+            gethostname(host, sizeof host - 1);
+
+            sensornode::MqttClient::Options mopts;
+            mopts.host      = cfg.mqtt_host;
+            mopts.port      = cfg.mqtt_port;
+            mopts.client_id = std::string("otad-") + host;
+            mqtt = std::make_unique<sensornode::MqttClient>(loop, mopts);
+
+            mqtt->subscribe(cfg.mqtt_topic, 1);
+            mqtt->on_connect([&]() {
+                SN_LOG_INFO("mqtt", "connected host=%s port=%d", cfg.mqtt_host.c_str(), cfg.mqtt_port);
+            });
+            mqtt->on_disconnect([&](const char* reason, std::chrono::seconds retry_in) {
+                SN_LOG_WARN("mqtt", "disconnected: %s retry_in=%llds", reason,
+                            static_cast<long long>(retry_in.count()));
+            });
+            mqtt->on_message([&](const std::string& topic, std::string_view payload, bool retained) {
+                if (topic != cfg.mqtt_topic) return;
+                SN_LOG_DEBUG("mqtt", "manifest received retained=%d payload=%s", retained, sensornode::log::quote(payload).c_str());
+                // Payload rỗng là cách xoá retained message trên broker.
+                if (payload.empty()) {
+                    ota.offer(std::nullopt);
+                    return;
+                }
+                std::string err;
+                auto m = sensornode::ota::parse_manifest(payload, err);
+                if (!m) {
+                    SN_LOG_WARN("mqtt", "manifest rejected: %s topic=%s", err.c_str(), topic.c_str());
+                    return;
+                }
+                ota.offer(std::move(m));
+            });
+
+            SN_LOG_INFO("mqtt", "broker host=%s port=%d client_id=%s topic=%s", cfg.mqtt_host.c_str(),
+                        cfg.mqtt_port, mopts.client_id.c_str(), cfg.mqtt_topic.c_str());
+            mqtt->start();
+        } else {
+            SN_LOG_INFO("mqtt", "disabled reason=\"no --mqtt-host\"");
+        }
+
         // Chưa có việc background nào để kiểm tra, tick chạy được nghĩa là loop không bị kẹt.
         sensornode::Watchdog watchdog(loop, [] { return true; });
 
@@ -201,6 +274,7 @@ int main(int argc, char* argv[])
         update_status();
         loop.run();
 
+        if (mqtt) mqtt->stop();
         loop.remove(signals.getfd());
 
         return EXIT_SUCCESS;
