@@ -28,6 +28,7 @@ sys.path.insert(0, HERE)
 import otadenv  # noqa: E402
 
 FAKE = os.path.join(HERE, "fake-swupdate")
+FAKE_REBOOT = os.path.join(HERE, "fake-reboot")
 OTAD = os.path.join(REPO, "build", "otad", "sensornode-otad")
 WORKDIR = os.path.join(REPO, "build", "otad-smoke")
 SUN_PATH_MAX = 107
@@ -163,7 +164,8 @@ class Otad:
         args = otadenv.otad_args(self.dir)
         args[args.index("-s") + 1] = self.sock
         args += ["-p", self.progress]
-        env = dict(os.environ, FAKE_SWU_PROGRESS=self.progress)
+        self.reboot_mark = os.path.join(self.dir, "rebooted")
+        env = dict(os.environ, FAKE_SWU_PROGRESS=self.progress, FAKE_REBOOT_MARK=self.reboot_mark)
         self.proc = subprocess.Popen([OTAD, *args, *self.args], env=env,
                                      stdout=self.log_file, stderr=subprocess.STDOUT)
         deadline = time.monotonic() + 3
@@ -440,6 +442,88 @@ class ProgressTest(OtadTestCase):
         _, events = self.install("fail", "failed")
         self.assertEqual(self.percents(events, "installing"), [0, 25])
         self.assertEqual(events[-1]["ota"]["error"], "[ERROR] : SWUPDATE failed [0] Image invalid or corrupted")
+
+
+class RebootTest(OtadTestCase):
+    URL = "http://host:8000/release/x-0.3.0.swu"
+
+    def otad_reboot(self, tool, *args, **env):
+        return self.otad("-f", "-r", os.path.join(FAKE_REBOOT, tool), *args, **env)
+
+    def installed(self, tool):
+        o = self.otad_reboot(tool)
+        c = self.connect(o)
+        c.cmd({"cmd": "install", "url": self.URL})
+        c.wait_state("done")
+        return o, c
+
+    def test_reboot_after_install(self):
+        o, c = self.installed("ok.sh")
+        self.assertTrue(c.cmd({"cmd": "reboot", "id": 9})["ok"])
+        self.assertEqual(c.wait_state("rebooting", 3)[-1]["ota"]["percent"], 100)
+        self.assertEqual(o.proc.wait(3), 0, "otad should exit cleanly on SIGTERM from reboot")
+        self.assertTrue(os.path.exists(o.reboot_mark))
+        self.assertIn("reboot requested by pid=%d" % o.proc.pid, o.log())
+
+    def test_reboot_rejected_when_not_done(self):
+        o = self.otad_reboot("ok.sh")
+        c = self.connect(o)
+        self.assertEqual(c.cmd({"cmd": "reboot"})["error"], "no update installed")
+        c.cmd({"cmd": "install", "url": self.URL})
+        self.assertEqual(c.cmd({"cmd": "reboot"})["error"], "busy")
+        c.wait_state("done")
+        self.assertFalse(os.path.exists(o.reboot_mark))
+
+    def test_reboot_after_failed_install_rejected(self):
+        c = self.connect(self.otad_reboot("ok.sh"))
+        c.cmd({"cmd": "install", "url": "http://host/fail.swu"})
+        c.wait_state("failed")
+        self.assertEqual(c.cmd({"cmd": "reboot"})["error"], "no update installed")
+
+    def test_reboot_pending_at_start(self):
+        o = self.otad_reboot("ok.sh", active_slot="B", ustate="1")
+        c = self.connect(o)
+        self.assertEqual(c.hello["ota"]["state"], "done")
+        self.assertTrue(c.cmd({"cmd": "reboot"})["ok"])
+        self.assertEqual(o.proc.wait(3), 0)
+
+    def test_reboot_command_fails(self):
+        o, c = self.installed("fail.sh")
+        self.assertTrue(c.cmd({"cmd": "reboot"})["ok"])
+        c.wait_state("rebooting", 3)
+        ota = c.wait_state("done", 3)[-1]["ota"]
+        self.assertEqual(ota["error"], "reboot failed: Failed to reboot: Access denied")
+        self.assertEqual(c.cmd({"cmd": "install", "url": self.URL})["error"], "reboot pending")
+        self.assertEqual(c.cmd({"cmd": "status"})["ota"]["error"], ota["error"])
+        # Thử lại được, lỗi cũ bị xoá khi bắt đầu lần reboot mới.
+        self.assertTrue(c.cmd({"cmd": "reboot"})["ok"])
+        self.assertIsNone(c.wait_state("rebooting", 3)[-1]["ota"]["error"])
+
+    def test_reboot_command_missing(self):
+        o = self.otad("-f", "-r", "/nonexistent/systemctl reboot")
+        c = self.connect(o)
+        c.cmd({"cmd": "install", "url": self.URL})
+        c.wait_state("done")
+        c.cmd({"cmd": "reboot"})
+        ota = c.wait_state("done", 3)[-1]["ota"]
+        self.assertIn("No such file or directory", ota["error"])
+
+    def test_reboot_twice_and_shutdown_cleans_up(self):
+        o, c = self.installed("hang.sh")
+        self.assertTrue(c.cmd({"cmd": "reboot"})["ok"])
+        self.assertEqual(c.cmd({"cmd": "reboot"})["error"], "already rebooting")
+        self.assertEqual(c.cmd({"cmd": "install", "url": self.URL})["error"], "reboot pending")
+        pid = int(o.log().split("reboot: spawned pid=")[1].split()[0])
+        self.assertTrue(pgroup_alive(pid))
+        self.assertEqual(o.stop(), 0)
+        self.assertFalse(pgroup_alive(pid))
+
+    def test_empty_reboot_cmd(self):
+        o = Otad(os.path.join(WORKDIR, self._testMethodName), ["-r", "  "])
+        self.addCleanup(o.kill)
+        r = subprocess.run([OTAD, *otadenv.otad_args(o.dir), "-r", "  "], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("--reboot-cmd must not be empty", r.stderr)
 
 
 def manifest(version, url=None, **extra):

@@ -33,7 +33,7 @@ Kết quả mong đợi:
 
 ## Test tự động
 
-`smoke_test.py` gồm 33 test, mỗi test chạy một otad riêng với môi trường sạch và nói chuyện với nó qua control socket.
+`smoke_test.py` gồm 41 test, mỗi test chạy một otad riêng với môi trường sạch và nói chuyện với nó qua control socket.
 
 Chạy trực tiếp, không qua CTest:
 
@@ -158,6 +158,24 @@ tests/otad/otactl.py --until done -t 10 '{"cmd":"install","url":"http://host/x.s
 
 Với `--fake-installer`, url chứa chữ `fail` sẽ lỗi ở mốc 50% của bước cài.
 
+## Reboot giả
+
+Dùng với `-r tests/otad/fake-reboot/<script>` thay cho `systemctl reboot`.
+
+| Script    | Hành vi                                                       |
+|-----------|---------------------------------------------------------------|
+| `ok.sh`   | gửi SIGTERM cho otad như systemd khi reboot thật, rồi exit 0  |
+| `fail.sh` | exit 1 với `Failed to reboot: Access denied`                  |
+| `hang.sh` | treo, để thử `reboot` lần hai và tắt otad khi lệnh còn chạy   |
+
+```bash
+tests/otad/run-otad.sh -f -r tests/otad/fake-reboot/ok.sh     # terminal 1
+tests/otad/otactl.py --until done -t 10 '{"cmd":"install","url":"http://host/x.swu"}'
+tests/otad/otactl.py reboot                                   # otad thoát với exit 0
+```
+
+Sau một lần cài xong, env trong `build/otad-test` vẫn ở trạng thái cũ (fake installer không ghi env), nên chạy lại otad sẽ về `idle`.
+
 ## Cấu trúc thư mục
 
 ```
@@ -170,6 +188,7 @@ tests/
     +-- run-otad.sh       chạy otad với môi trường giả lập
     +-- smoke_test.py     test tự động
     +-- fake-swupdate/    script thay thế 09-swupdate-args
+    +-- fake-reboot/      script thay thế systemctl reboot
 ```
 
 File sinh ra lúc chạy đều nằm trong `build/`:
