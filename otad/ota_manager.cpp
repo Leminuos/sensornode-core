@@ -5,12 +5,13 @@
  *   +------+  install   +-------------+  phase=installing  +------------+  finish ok  +------+
  *   | idle | ---------> | downloading | -----------------> | installing | ----------> | done |
  *   +------+            +-------------+                    +------------+             +------+
- *                          ^     |                               |
- *                          |     | finish fail                   | finish fail
- *                  install |     v                               |
- *                          | +--------+                          |
- *                          +-| failed | <------------------------+
- *                            +--------+
+ *                          ^     |                               |                       |  ^
+ *                          |     | finish fail                   | finish fail    reboot |  | lỗi
+ *                  install |     v                               |                       v  |
+ *                          | +--------+                          |                  +-----------+
+ *                          +-| failed | <------------------------+                  | rebooting |
+ *                            +--------+                                             +-----------+
+ *
  *
  *   Khởi động khi running_slot != active_slot và ustate=1 thì vào thẳng done.
  *
@@ -22,9 +23,8 @@
  *   | downloading | từ chối "busy"                                 |
  *   | installing  | từ chối "busy"                                 |
  *   | done        | từ chối "reboot pending", slot kia đã được ghi |
+ *   | rebooting   | từ chối "reboot pending"                       |
  *   +-------------+------------------------------------------------+
- *
- *   Không có đường quay về idle, chỉ reboot mới thoát khỏi done.
  */
 
 #include "otad/ota_manager.h"
@@ -42,13 +42,16 @@ const char* to_string(OtaState s) {
     case OtaState::installing:  return "installing";
     case OtaState::done:        return "done";
     case OtaState::failed:      return "failed";
+    case OtaState::rebooting:   return "rebooting";
     }
     return "unknown";
 }
 
-OtaManager::OtaManager(std::unique_ptr<Installer> installer, bool reboot_pending,
-                       std::optional<std::string> running_version)
-    : installer_(std::move(installer)), running_version_(std::move(running_version)) {
+OtaManager::OtaManager(std::unique_ptr<Installer> installer, std::unique_ptr<Rebooter> rebooter,
+                       bool reboot_pending, std::optional<std::string> running_version)
+    : installer_(std::move(installer)),
+      rebooter_(std::move(rebooter)),
+      running_version_(std::move(running_version)) {
     if (reboot_pending) {
         snap_.state   = OtaState::done;
         snap_.percent = 100;
@@ -56,13 +59,15 @@ OtaManager::OtaManager(std::unique_ptr<Installer> installer, bool reboot_pending
 
     installer_->on_progress([this](Phase p, int pct) { handle_progress(p, pct); });
     installer_->on_finish([this](bool ok, const std::string& err) { handle_finish(ok, err); });
+    rebooter_->on_fail([this](const std::string& err) { handle_reboot_fail(err); });
 }
 
 const char* OtaManager::install(const std::string& url) {
     switch (snap_.state) {
     case OtaState::downloading:
     case OtaState::installing:  return "busy";
-    case OtaState::done:        return "reboot pending";
+    case OtaState::done:
+    case OtaState::rebooting:   return "reboot pending";
     case OtaState::idle:
     case OtaState::failed:      break;
     }
@@ -80,6 +85,31 @@ const char* OtaManager::install(const std::string& url) {
 
     installer_->start(target);
     return nullptr;
+}
+
+const char* OtaManager::reboot() {
+    switch (snap_.state) {
+    case OtaState::done:        break;
+    case OtaState::rebooting:   return "already rebooting";
+    case OtaState::downloading:
+    case OtaState::installing:  return "busy";
+    case OtaState::idle:
+    case OtaState::failed:      return "no update installed";
+    }
+
+    snap_.error.clear();
+    SN_LOG_NOTICE("ota", "reboot requested");
+    set_state(OtaState::rebooting);
+    rebooter_->start();
+    return nullptr;
+}
+
+// Slot mới vẫn đã được ghi, quay về done để client thử reboot lại.
+void OtaManager::handle_reboot_fail(const std::string& error) {
+    if (snap_.state != OtaState::rebooting) return;
+    snap_.error = "reboot failed: " + error;
+    SN_LOG_ERR("ota", "%s", snap_.error.c_str());
+    set_state(OtaState::done);
 }
 
 void OtaManager::offer(std::optional<Manifest> m) {

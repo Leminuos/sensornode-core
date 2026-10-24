@@ -2,6 +2,7 @@
 
 #include "otad/installer.h"
 #include "otad/manifest.h"
+#include "otad/rebooter.h"
 
 #include <functional>
 #include <memory>
@@ -10,7 +11,7 @@
 
 namespace sensornode::ota {
 
-enum class OtaState { idle, downloading, installing, done, failed };
+enum class OtaState { idle, downloading, installing, done, failed, rebooting };
 
 const char* to_string(OtaState s);
 
@@ -26,14 +27,17 @@ public:
 
     using ChangeHandler = std::function<void(const Snapshot&)>;
 
-    OtaManager(std::unique_ptr<Installer> installer, bool reboot_pending,
-               std::optional<std::string> running_version);
+    OtaManager(std::unique_ptr<Installer> installer, std::unique_ptr<Rebooter> rebooter,
+               bool reboot_pending, std::optional<std::string> running_version);
 
     OtaManager(const OtaManager&) = delete;
     OtaManager& operator=(const OtaManager&) = delete;
 
     // Trả về nullptr nếu đã bắt đầu cài, ngược lại là lý do từ chối. url rỗng thì cài bản available.
     const char* install(const std::string& url);
+
+    // Chỉ nhận ở done. Trả về nullptr nếu đã chạy lệnh reboot, ngược lại là lý do từ chối.
+    const char* reboot();
 
     // Manifest mới nhận, nullopt khi manifest bị xoá; chỉ giữ nếu mới hơn bản đang chạy.
     void offer(std::optional<Manifest> m);
@@ -49,8 +53,10 @@ private:
     void set_available(std::optional<Manifest> m);
     void handle_progress(Phase phase, int percent);
     void handle_finish(bool ok, const std::string& error);
+    void handle_reboot_fail(const std::string& error);
 
     std::unique_ptr<Installer> installer_;
+    std::unique_ptr<Rebooter>  rebooter_;
     std::optional<std::string> running_version_;
     Snapshot                   snap_;
     ChangeHandler              on_state_;

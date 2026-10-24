@@ -31,6 +31,7 @@
  *   | ping    | kiểm tra daemon còn sống                                     |
  *   | status  | trạng thái OTA, version firmware và trạng thái A/B           |
  *   | install | cài .swu từ url, không có url thì cài bản ota.available      |
+ *   | reboot  | khởi động vào slot vừa cài, chỉ nhận khi state là done       |
  *   +---------+--------------------------------------------------------------+
  *
  *   install
@@ -48,10 +49,10 @@
  *   +-----------+-------------------------------------------------------------+
  *   | field     | Ý nghĩa                                                     |
  *   +===========+=============================================================+
- *   | state     | idle, downloading, installing, done, failed                 |
- *   | percent   | 0..100 khi downloading/installing, 100 ở done, còn lại null |
+ *   | state     | idle, downloading, installing, done, failed, rebooting      |
+ *   | percent   | 0..100 khi đang cài, 100 ở done/rebooting, còn lại null     |
  *   | url       | url của lần cài gần nhất, null nếu chưa cài lần nào         |
- *   | error     | lý do lỗi khi state là failed, còn lại null                 |
+ *   | error     | lỗi cài (failed) hoặc lỗi lệnh reboot (done), còn lại null  |
  *   | available | manifest MQTT mới hơn sw_version, null nếu không có         |
  *   +-----------+-------------------------------------------------------------+
  *
@@ -64,11 +65,14 @@
  *     {"type":"state","ota":{"state":"installing","percent":0,"url":"http://...","error":null}}
  *     {"type":"progress","ota":{"state":"installing","percent":30,"url":"http://...","error":null}}
  *     {"type":"state","ota":{"state":"failed","percent":null,"url":"http://...","error":"..."}}
+ *     {"type":"state","ota":{"state":"rebooting","percent":100,...}}
+ *     {"type":"state","ota":{"state":"done","percent":100,...,"error":"reboot failed: ..."}}
  *
  *   reply
  *     {"type":"reply","cmd":"ping","id":1,"ok":true}
  *     {"type":"reply","cmd":"install","id":3,"ok":true}
  *     {"type":"reply","cmd":"install","id":4,"ok":false,"error":"busy"}
+ *     {"type":"reply","cmd":"reboot","id":5,"ok":false,"error":"no update installed"}
  *     {"type":"reply","cmd":"foo","ok":false,"error":"unknown command"}
  *
  *   status
@@ -107,6 +111,8 @@
  *   | invalid url             | không phải chuỗi http(s), có khoảng trắng, dài |
  *   | busy                    | đang downloading hoặc installing               |
  *   | reboot pending          | đã cài xong, phải reboot trước khi cài tiếp    |
+ *   | no update installed     | reboot khi chưa cài xong bản nào (idle/failed) |
+ *   | already rebooting       | reboot khi lệnh reboot trước đang chạy         |
  *   +-------------------------+------------------------------------------------+
  */
 
@@ -158,13 +164,13 @@ json manifest_to_json(const std::optional<Manifest>& m) {
 
 json ota_to_json(const OtaManager::Snapshot& s) {
     const bool running = s.state == OtaState::downloading || s.state == OtaState::installing;
-    const bool has_percent = running || s.state == OtaState::done;
+    const bool has_percent = running || s.state == OtaState::done || s.state == OtaState::rebooting;
 
     return {
         {"state",     to_string(s.state)},
         {"percent",   has_percent ? json(s.percent) : json(nullptr)},
         {"url",       s.url.empty() ? json(nullptr) : json(s.url)},
-        {"error",     s.state == OtaState::failed ? json(s.error) : json(nullptr)},
+        {"error",     s.error.empty() ? json(nullptr) : json(s.error)},
         {"available", manifest_to_json(s.available)},
     };
 }
@@ -233,6 +239,11 @@ std::string handle_command(const std::string& line, const SystemInfo& sys, OtaMa
         }
         // Reply chỉ báo đã nhận lệnh, state event có thể đã được broadcast trước reply này.
         if (const char* err = ota.install(url)) {
+            return to_line(error_reply(std::move(reply), err));
+        }
+        reply["ok"] = true;
+    } else if (cmd == "reboot") {
+        if (const char* err = ota.reboot()) {
             return to_line(error_reply(std::move(reply), err));
         }
         reply["ok"] = true;
