@@ -614,6 +614,21 @@ class MqttTest(OtadTestCase):
         b.publish(manifest("0.3.0"))
         self.assertEqual(c.wait_type("available", 15)["ota"]["available"]["version"], "0.3.0")
 
+    def test_force_update_offers_older_manifest(self):
+        b = self.broker()
+        o = self.otad_with(b, "--force-update")
+        c = self.connect(o)
+        self.wait_log(o, "mqtt: connected")
+
+        b.publish(manifest("0.2.0"))
+        self.assertEqual(c.wait_type("available")["ota"]["available"]["version"], "0.2.0")
+        b.publish(manifest("0.1.0"))
+        self.assertEqual(c.wait_type("available")["ota"]["available"]["version"], "0.1.0")
+        self.assertIn("manifest accepted (force-update) version=0.1.0 running=0.2.0", o.log())
+
+        self.assertTrue(c.cmd({"cmd": "install"})["ok"])
+        c.wait_state("done")
+
     def test_unknown_running_version(self):
         b = self.broker()
         o = Otad(os.path.join(WORKDIR, self._testMethodName),

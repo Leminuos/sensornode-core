@@ -42,6 +42,8 @@ public:
     // Manifest mới nhận, nullopt khi manifest bị xoá; chỉ giữ nếu mới hơn bản đang chạy.
     void offer(std::optional<Manifest> m);
 
+    void set_force_update(bool force) noexcept { force_update_ = force; }
+
     const Snapshot& snapshot() const noexcept { return snap_; }
 
     void on_state(ChangeHandler h)    { on_state_ = std::move(h); }
@@ -58,6 +60,7 @@ private:
     std::unique_ptr<Installer> installer_;
     std::unique_ptr<Rebooter>  rebooter_;
     std::optional<std::string> running_version_;
+    bool                       force_update_ = false;
     Snapshot                   snap_;
     ChangeHandler              on_state_;
     ChangeHandler              on_progress_;
