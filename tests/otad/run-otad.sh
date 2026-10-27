@@ -16,7 +16,7 @@ bin=${OTAD_BIN:-$repo/build/otad/sensornode-otad}
 dir=${OTAD_TEST_DIR:-$repo/build/otad-test}
 
 if [ ! -x "$bin" ]; then
-    echo "error: $bin not found, run ./build.sh first" >&2
+    echo "error: $bin not found, run tools/build-host.sh first" >&2
     exit 1
 fi
 
