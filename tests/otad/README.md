@@ -20,7 +20,7 @@ Tuỳ chọn:
 ## Bắt đầu nhanh
 
 ```bash
-./build.sh
+tools/build-host.sh
 (cd build && ctest --output-on-failure)
 ```
 
