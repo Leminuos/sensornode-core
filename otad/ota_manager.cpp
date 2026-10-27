@@ -218,7 +218,10 @@ void OtaManager::update_percent(int percent) {
 }
 
 void OtaManager::offer(std::optional<Manifest> m) {
-    if (m) {
+    if (m && force_update_) {
+        SN_LOG_INFO("ota", "manifest accepted (force-update) version=%s running=%s",
+                    m->version.c_str(), running_version_ ? running_version_->c_str() : "?");
+    } else if (m) {
         if (!running_version_) {
             SN_LOG_WARN("ota", "manifest ignored: running version unknown version=%s", m->version.c_str());
             m.reset();

@@ -61,6 +61,7 @@ std::vector<std::string> split_words(const std::string& s) {
 
 struct Config {
     bool        fake_installer = false;
+    bool        force_update   = false;
     std::string socket_path    = "/run/sensornode/ota.sock";
     std::string swupdate_tool  = "/usr/bin/09-swupdate-args";
     std::string progress_sock  = "/tmp/swupdateprog";
@@ -87,6 +88,7 @@ void print_usage()
         "  -m, --mqtt-host HOST        MQTT broker for update manifests (default: MQTT disabled)\n"
         "  -P, --mqtt-port PORT        MQTT broker port (default: 1883)\n"
         "  -T, --mqtt-topic TOPIC      manifest topic (default: ota/latest)\n"
+        "  -F, --force-update          offer every valid manifest, even if not newer than sw_version\n"
         "  -h, --help                  show this help\n"
         "  -v, --version               show version\n"
     );
@@ -94,7 +96,7 @@ void print_usage()
 
 bool parse_args(int argc, char* argv[], Config& cfg)
 {
-    static const char short_opts[] = ":fs:t:p:r:w:e:k:m:P:T:hv";
+    static const char short_opts[] = ":fs:t:p:r:w:e:k:m:P:T:Fhv";
 
     static const option long_opts[] = {
         {"fake-installer",  no_argument,       nullptr, 'f'},
@@ -108,6 +110,7 @@ bool parse_args(int argc, char* argv[], Config& cfg)
         {"mqtt-host",       required_argument, nullptr, 'm'},
         {"mqtt-port",       required_argument, nullptr, 'P'},
         {"mqtt-topic",      required_argument, nullptr, 'T'},
+        {"force-update",    no_argument,       nullptr, 'F'},
         {"help",            no_argument,       nullptr, 'h'},
         {"version",         no_argument,       nullptr, 'v'},
         {nullptr,           0,                 nullptr,  0 },
@@ -132,6 +135,7 @@ bool parse_args(int argc, char* argv[], Config& cfg)
             }
             break;
         case 'T': cfg.mqtt_topic = optarg; break;
+        case 'F': cfg.force_update = true; break;
         case 'h': show_help = true; break;
         case 'v': show_version = true; break;
         case ':':
@@ -228,6 +232,8 @@ int main(int argc, char* argv[])
 
         auto rebooter = std::make_unique<sensornode::ota::Rebooter>(loop, split_words(cfg.reboot_cmd));
         sensornode::ota::OtaManager ota(std::move(installer), std::move(rebooter), sys, st);
+        ota.set_force_update(cfg.force_update);
+        if (cfg.force_update) SN_LOG_WARN("ota", "force-update enabled: manifests are not compared with sw_version");
         SN_LOG_INFO("ota", "initial state=%s", sensornode::ota::to_string(ota.snapshot().state));
 
         const auto update_status = [&]() {
