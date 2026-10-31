@@ -239,9 +239,13 @@ int main(int argc, char *argv[]) {
         });
 
         const char* mqtt_state = cfg.mqtt_host.empty() ? "disabled" : "connecting";
+        // ota-confirm-boot đọc sensors= và db= để quyết định commit slot.
+        const char* sensors_state = "unknown";
+        const char* db_state      = "unknown";
         const auto update_status = [&]() {
             const std::string st = "STATUS=interval=" + std::to_string(cfg.interval.count()) +
-                                   "ms mqtt=" + mqtt_state;
+                                   "ms mqtt=" + mqtt_state + " sensors=" + sensors_state +
+                                   " db=" + db_state;
             sensornode::systemd::notify(st);
         };
 
@@ -291,8 +295,17 @@ int main(int argc, char *argv[]) {
             SN_LOG_DEBUG("sensor", "sample ts_ms=%" PRId64 " temp_c=%.2f humi_rh=%.2f lux=%.2f",
                          s.ts_ms, s.temp_c, s.humi_rh, s.lux);
 
-            if (!storage.insert(s)) {
+            const bool stored = storage.insert(s);
+            if (!stored) {
                 SN_LOG_ERR("db", "insert failed: %s ts_ms=%" PRId64, storage.errmsg(), s.ts_ms);
+            }
+
+            const char* new_sensors = s.errors.empty() ? "ok" : "error";
+            const char* new_db      = stored ? "ok" : "error";
+            if (std::strcmp(new_sensors, sensors_state) != 0 || std::strcmp(new_db, db_state) != 0) {
+                sensors_state = new_sensors;
+                db_state      = new_db;
+                update_status();
             }
 
             server.broadcast(sensornode::make_sample_event(s));
