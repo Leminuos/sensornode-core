@@ -1,3 +1,4 @@
+#include "common/device_id.h"
 #include "common/event_loop.h"
 #include "common/log.h"
 #include "common/mqtt_client.h"
@@ -69,6 +70,7 @@ struct Config {
     std::string mqtt_host;
     int         mqtt_port      = 1883;
     std::string mqtt_topic     = "ota/latest";
+    std::string node_id;
     sensornode::ota::SystemInfo::Paths sys;
 };
 
@@ -88,6 +90,7 @@ void print_usage()
         "  -m, --mqtt-host HOST        MQTT broker for update manifests (default: MQTT disabled)\n"
         "  -P, --mqtt-port PORT        MQTT broker port (default: 1883)\n"
         "  -T, --mqtt-topic TOPIC      manifest topic (default: ota/latest)\n"
+        "  -n, --node-id ID            node id in the MQTT client id (default: network MAC)\n"
         "  -F, --force-update          offer every valid manifest, even if not newer than sw_version\n"
         "  -h, --help                  show this help\n"
         "  -v, --version               show version\n"
@@ -96,7 +99,7 @@ void print_usage()
 
 bool parse_args(int argc, char* argv[], Config& cfg)
 {
-    static const char short_opts[] = ":fs:t:p:r:w:e:k:m:P:T:Fhv";
+    static const char short_opts[] = ":fs:t:p:r:w:e:k:m:P:T:n:Fhv";
 
     static const option long_opts[] = {
         {"fake-installer",  no_argument,       nullptr, 'f'},
@@ -110,6 +113,7 @@ bool parse_args(int argc, char* argv[], Config& cfg)
         {"mqtt-host",       required_argument, nullptr, 'm'},
         {"mqtt-port",       required_argument, nullptr, 'P'},
         {"mqtt-topic",      required_argument, nullptr, 'T'},
+        {"node-id",         required_argument, nullptr, 'n'},
         {"force-update",    no_argument,       nullptr, 'F'},
         {"help",            no_argument,       nullptr, 'h'},
         {"version",         no_argument,       nullptr, 'v'},
@@ -135,6 +139,7 @@ bool parse_args(int argc, char* argv[], Config& cfg)
             }
             break;
         case 'T': cfg.mqtt_topic = optarg; break;
+        case 'n': cfg.node_id = optarg; break;
         case 'F': cfg.force_update = true; break;
         case 'h': show_help = true; break;
         case 'v': show_version = true; break;
@@ -148,6 +153,12 @@ bool parse_args(int argc, char* argv[], Config& cfg)
             print_usage();
             return false;
         }
+    }
+
+    if (cfg.node_id.empty()) cfg.node_id = sensornode::default_device_id();
+    if (cfg.node_id.empty() || cfg.node_id.find_first_of("/+#") != std::string::npos) {
+        std::fprintf(stderr, "%s: invalid --node-id '%s'\n", argv[0], cfg.node_id.c_str());
+        return false;
     }
 
     if (split_words(cfg.reboot_cmd).empty()) {
@@ -251,13 +262,10 @@ int main(int argc, char* argv[])
 
         std::unique_ptr<sensornode::MqttClient> mqtt;
         if (!cfg.mqtt_host.empty()) {
-            char host[256] = {};
-            gethostname(host, sizeof host - 1);
-
             sensornode::MqttClient::Options mopts;
             mopts.host      = cfg.mqtt_host;
             mopts.port      = cfg.mqtt_port;
-            mopts.client_id = std::string("otad-") + host;
+            mopts.client_id = "otad-" + cfg.node_id;
             mqtt = std::make_unique<sensornode::MqttClient>(loop, mopts);
 
             mqtt->subscribe(cfg.mqtt_topic, 1);

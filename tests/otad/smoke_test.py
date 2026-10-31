@@ -622,6 +622,19 @@ class MqttTest(OtadTestCase):
         b.publish(manifest("0.3.0"))
         self.assertEqual(c.wait_type("available", 15)["ota"]["available"]["version"], "0.3.0")
 
+    def test_client_id_from_node_id(self):
+        b = self.broker()
+        o = self.otad_with(b, "--node-id", "board-1")
+        self.connect(o)
+        self.wait_log(o, "client_id=otad-board-1 ")
+
+    def test_invalid_node_id(self):
+        o = Otad(os.path.join(WORKDIR, self._testMethodName))
+        r = subprocess.run([OTAD, *otadenv.otad_args(o.dir), "--node-id", "a/b"],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("invalid --node-id", r.stderr)
+
     def test_force_update_offers_older_manifest(self):
         b = self.broker()
         o = self.otad_with(b, "--force-update")

@@ -1,3 +1,4 @@
+#include "common/device_id.h"
 #include "common/event_loop.h"
 #include "common/log.h"
 #include "common/signal_fd.h"
@@ -67,7 +68,7 @@ void print_usage(void) {
         "  -i, --interval-ms MS      measurement period in ms (default: 5000)\n"
         "  -m, --mqtt-host HOST      MQTT broker, IP preferred (default: MQTT disabled)\n"
         "  -p, --mqtt-port PORT      MQTT broker port (default: 1883)\n"
-        "  -n, --node-id ID          node id in MQTT topics (default: hostname)\n"
+        "  -n, --node-id ID          node id in MQTT topics (default: network MAC)\n"
         "  -h, --help                show this help\n"
         "  -v, --version             show version\n"
     );
@@ -142,10 +143,7 @@ bool parse_args(int argc, char* argv[], Config& cfg)
         return false;
     }
 
-    if (cfg.node_id.empty()) {
-        char host[256] = {};
-        if (gethostname(host, sizeof host - 1) == 0) cfg.node_id = host;
-    }
+    if (cfg.node_id.empty()) cfg.node_id = sensornode::default_device_id();
     // Ký tự wildcard/phân cấp của MQTT không được nằm trong một level của topic.
     if (cfg.node_id.empty() || cfg.node_id.find_first_of("/+#") != std::string::npos) {
         std::fprintf(stderr, "%s: invalid --node-id '%s'\n", argv[0], cfg.node_id.c_str());

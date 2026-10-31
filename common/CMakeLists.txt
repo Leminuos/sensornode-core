@@ -1,4 +1,5 @@
 add_library(sensornode_common STATIC
+    device_id.cpp
     event_loop.cpp
     log.cpp
     mqtt_client.cpp
