@@ -13,7 +13,7 @@ namespace {
 
 constexpr std::int64_t kHourMs = 3600 * 1000;
 
-constexpr int kSchemaVersion = 1;
+constexpr int kSchemaVersion = 2;
 
 constexpr const char* kSchemaV1 = R"sql(
     CREATE TABLE samples (
@@ -32,6 +32,15 @@ constexpr const char* kSchemaV1 = R"sql(
         humi_avg REAL, humi_min REAL, humi_max REAL,
         lux_avg  REAL, lux_min  REAL, lux_max  REAL
     );
+)sql";
+
+// DB lên từ v1 đã publish trực tiếp nên không gửi lại phần lịch sử cũ.
+constexpr const char* kSchemaV2 = R"sql(
+    CREATE TABLE forward_state (
+        id       INTEGER PRIMARY KEY CHECK (id = 1),
+        acked_ts INTEGER NOT NULL
+    );
+    INSERT INTO forward_state (id, acked_ts) SELECT 1, COALESCE(MAX(ts), 0) FROM samples;
 )sql";
 
 constexpr const char* kInsertSql =
@@ -66,6 +75,16 @@ constexpr const char* kPurgeHourlySql = R"sql(
     WHERE hour_ts < ?1
 )sql";
 
+constexpr const char* kPendingSql = R"sql(
+    SELECT ts, temp_c, humi_rh, lux FROM samples
+    WHERE ts > ?1 AND ts <= ?2
+    ORDER BY ts LIMIT ?3
+)sql";
+
+constexpr const char* kLoadCursorSql = "SELECT acked_ts FROM forward_state WHERE id = 1";
+
+constexpr const char* kSaveCursorSql = "UPDATE forward_state SET acked_ts = ?1 WHERE id = 1";
+
 std::int64_t to_ms(std::chrono::hours h) {
     return std::chrono::duration_cast<std::chrono::milliseconds>(h).count();
 }
@@ -90,6 +109,9 @@ Storage::Storage(const std::string& path) {
     aggregate_    = prepare(kAggregateSql);
     purge_raw_    = prepare(kPurgeRawSql);
     purge_hourly_ = prepare(kPurgeHourlySql);
+    pending_      = prepare(kPendingSql);
+    load_cursor_  = prepare(kLoadCursorSql);
+    save_cursor_  = prepare(kSaveCursorSql);
 }
 
 Storage::~Storage() = default;
@@ -156,6 +178,42 @@ bool Storage::maintenance(std::int64_t now_ms, MaintenanceStats& stats) {
     return true;
 }
 
+std::vector<Sample> Storage::pending(std::int64_t after_ms, std::int64_t until_ms, int limit) {
+    sqlite3_stmt* st = pending_.get();
+    sqlite3_bind_int64(st, 1, after_ms);
+    sqlite3_bind_int64(st, 2, until_ms);
+    sqlite3_bind_int(st, 3, limit);
+
+    std::vector<Sample> rows;
+    int rc;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        Sample s;
+        s.ts_ms   = sqlite3_column_int64(st, 0);
+        s.temp_c  = sqlite3_column_double(st, 1);
+        s.humi_rh = sqlite3_column_double(st, 2);
+        s.lux     = sqlite3_column_double(st, 3);
+        if (sqlite3_column_type(st, 1) == SQLITE_NULL) s.errors.push_back({kSht30, -EIO});
+        if (sqlite3_column_type(st, 3) == SQLITE_NULL) s.errors.push_back({kBh1750, -EIO});
+        rows.push_back(std::move(s));
+    }
+    if (rc != SQLITE_DONE) last_error_ = sqlite3_errmsg(db_.get());
+
+    sqlite3_reset(st);
+    return rows;
+}
+
+std::int64_t Storage::forward_cursor() {
+    sqlite3_stmt* st = load_cursor_.get();
+    const std::int64_t ts = sqlite3_step(st) == SQLITE_ROW ? sqlite3_column_int64(st, 0) : 0;
+    sqlite3_reset(st);
+    return ts;
+}
+
+bool Storage::save_forward_cursor(std::int64_t ts_ms) {
+    sqlite3_bind_int64(save_cursor_.get(), 1, ts_ms);
+    return step_done(save_cursor_.get());
+}
+
 const char* Storage::errmsg() const {
     return last_error_.c_str();
 }
@@ -207,6 +265,7 @@ void Storage::migrate() {
 
     bool ok = exec_sql("BEGIN IMMEDIATE") == SQLITE_OK;
     if (ok && version < 1) ok = exec_sql(kSchemaV1) == SQLITE_OK;
+    if (ok && version < 2) ok = exec_sql(kSchemaV2) == SQLITE_OK;
     if (ok) ok = exec_sql("PRAGMA user_version = " + std::to_string(kSchemaVersion)) == SQLITE_OK;
     if (ok) ok = exec_sql("COMMIT") == SQLITE_OK;
 

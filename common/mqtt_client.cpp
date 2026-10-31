@@ -42,6 +42,7 @@ MqttClient::MqttClient(EventLoop& loop, Options opts)
     mosquitto_connect_callback_set(mosq_, &MqttClient::handle_connect);
     mosquitto_disconnect_callback_set(mosq_, &MqttClient::handle_disconnect);
     mosquitto_message_callback_set(mosq_, &MqttClient::handle_message);
+    mosquitto_publish_callback_set(mosq_, &MqttClient::handle_publish);
 
     // Đăng ký Last Will với thư viện, gửi kèm packet CONNECT ở mỗi lần kết nối.
     if (!opts_.will_topic.empty()) {
@@ -90,10 +91,10 @@ void MqttClient::stop() {
 }
 
 // Gửi một message
-bool MqttClient::publish(const std::string& topic, std::string_view payload, int qos, bool retain) {
+bool MqttClient::publish(const std::string& topic, std::string_view payload, int qos, bool retain, int* mid) {
     if (!connected_) return false;
 
-    const int rc = mosquitto_publish(mosq_, nullptr, topic.c_str(),
+    const int rc = mosquitto_publish(mosq_, mid, topic.c_str(),
                                      static_cast<int>(payload.size()),
                                      payload.data(), qos, retain);
 
@@ -207,6 +208,11 @@ void MqttClient::handle_message(mosquitto*, void* self, const mosquitto_message*
     const std::string_view payload(static_cast<const char*>(msg->payload),
                                    static_cast<std::size_t>(msg->payloadlen));
     c->on_message_(msg->topic, payload, msg->retain);
+}
+
+void MqttClient::handle_publish(mosquitto*, void* self, int mid) {
+    auto* c = static_cast<MqttClient*>(self);
+    if (c->on_publish_) c->on_publish_(mid);
 }
 
 void MqttClient::handle_disconnect(mosquitto*, void* self, int rc) {

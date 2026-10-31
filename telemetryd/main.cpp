@@ -6,6 +6,7 @@
 #include "common/timer.h"
 #include "common/unix_server.h"
 #include "common/mqtt_client.h"
+#include "telemetryd/forwarder.h"
 #include "telemetryd/protocol.h"
 #include "telemetryd/sensors.h"
 #include "telemetryd/storage.h"
@@ -248,6 +249,7 @@ int main(int argc, char *argv[]) {
         };
 
         std::unique_ptr<sensornode::MqttClient> mqtt;
+        std::unique_ptr<sensornode::Forwarder>  forwarder;
         const std::string topic_base      = "sensornode/" + cfg.node_id;
         const std::string status_topic    = topic_base + "/status";
         const std::string telemetry_topic = topic_base + "/telemetry";
@@ -260,10 +262,12 @@ int main(int argc, char *argv[]) {
             mopts.will_topic   = status_topic;
             mopts.will_payload = "offline";
             mqtt = std::make_unique<sensornode::MqttClient>(loop, mopts);
+            forwarder = std::make_unique<sensornode::Forwarder>(loop, storage, *mqtt, telemetry_topic);
 
             mqtt->on_connect([&]() {
                 SN_LOG_INFO("mqtt", "connected host=%s port=%d", cfg.mqtt_host.c_str(), cfg.mqtt_port);
                 mqtt->publish(status_topic, "online", 1, true);
+                forwarder->on_connect();
                 mqtt_state = "connected";
                 update_status();
             });
@@ -307,7 +311,11 @@ int main(int argc, char *argv[]) {
             }
 
             server.broadcast(sensornode::make_sample_event(s));
-            if (mqtt) mqtt->publish(telemetry_topic, sensornode::make_sample_payload(s), 1, false);
+            if (forwarder && stored) {
+                forwarder->on_sample(s.ts_ms);
+            } else if (mqtt) {
+                mqtt->publish(telemetry_topic, sensornode::make_sample_payload(s), 1, false);
+            }
             latest = std::move(s);
             have_latest = true;
         });
@@ -363,6 +371,7 @@ int main(int argc, char *argv[]) {
         loop.run();
 
         if (mqtt) mqtt->stop();
+        if (forwarder) forwarder->save();
 
         loop.remove(signals.getfd());
         

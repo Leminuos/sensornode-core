@@ -35,8 +35,8 @@ public:
 
     using ConnectHandler    = std::function<void()>;
     using DisconnectHandler = std::function<void(const char* reason, std::chrono::seconds retry_in)>;
-    using MessageHandler    = std::function<void(const std::string& topic, std::string_view payload,
-                                                 bool retained)>;
+    using MessageHandler    = std::function<void(const std::string& topic, std::string_view payload, bool retained)>;
+    using PublishHandler    = std::function<void(int mid)>;
 
     MqttClient(EventLoop& loop, Options opts);
     ~MqttClient();
@@ -47,11 +47,12 @@ public:
     void on_connect(ConnectHandler h)       { on_connect_ = std::move(h); }
     void on_disconnect(DisconnectHandler h) { on_disconnect_ = std::move(h); }
     void on_message(MessageHandler h)       { on_message_ = std::move(h); }
+    void on_publish(PublishHandler h)       { on_publish_ = std::move(h); }
 
     void start();
     void stop();
 
-    bool publish(const std::string& topic, std::string_view payload, int qos, bool retain);
+    bool publish(const std::string& topic, std::string_view payload, int qos, bool retain, int* mid = nullptr);
 
     // Gọi trước start(), được subscribe lại sau mỗi lần kết nối vì session không được giữ.
     void subscribe(std::string topic, int qos);
@@ -62,6 +63,7 @@ private:
     static void handle_connect(mosquitto*, void* self, int rc);
     static void handle_disconnect(mosquitto*, void* self, int rc);
     static void handle_message(mosquitto*, void* self, const mosquitto_message* msg);
+    static void handle_publish(mosquitto*, void* self, int mid);
 
     void try_connect();
     void attach_socket();
@@ -93,6 +95,7 @@ private:
     ConnectHandler    on_connect_;
     DisconnectHandler on_disconnect_;
     MessageHandler    on_message_;
+    PublishHandler    on_publish_;
 };
 
 } // namespace sensornode

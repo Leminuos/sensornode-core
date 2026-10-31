@@ -1,4 +1,5 @@
 add_library(telemetry_core STATIC
+    forwarder.cpp
     protocol.cpp
     sensors.cpp
     storage.cpp

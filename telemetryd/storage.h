@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 struct sqlite3;
 struct sqlite3_stmt;
@@ -34,6 +35,11 @@ public:
     bool insert(const Sample& s);
     bool maintenance(std::int64_t now_ms, MaintenanceStats& stats);
 
+    std::vector<Sample> pending(std::int64_t after_ms, std::int64_t until_ms, int limit);
+
+    std::int64_t forward_cursor();
+    bool save_forward_cursor(std::int64_t ts_ms);
+
     const char* errmsg() const;
 
 private:
@@ -47,6 +53,9 @@ private:
     Stmt aggregate_;
     Stmt purge_raw_;
     Stmt purge_hourly_;
+    Stmt pending_;
+    Stmt load_cursor_;
+    Stmt save_cursor_;
     std::string last_error_;
 
     void open(const std::string& path);
