@@ -6,7 +6,7 @@ namespace sensornode::display {
 
 class Backlight {
 public:
-    Backlight(const std::string& chip_dir, int channel);
+    explicit Backlight(const std::string& device_dir);
 
     Backlight(const Backlight&) = delete;
     Backlight& operator=(const Backlight&) = delete;
@@ -14,8 +14,7 @@ public:
     bool set_brightness(int value);
 
 private:
-    std::string channel_dir_;
-    bool        enabled_ = false;
+    std::string brightness_path_;
 };
 
 } // namespace sensornode::display

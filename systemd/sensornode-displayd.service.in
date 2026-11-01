@@ -20,7 +20,7 @@ Restart=on-failure
 RestartSec=2s
 RestartPreventExitStatus=2
 
-# Root chỉ để ghi file sysfs PWM (chủ là root), không giữ capability nào.
+# Root chỉ để ghi file sysfs backlight (chủ là root), không giữ capability nào.
 # Không bật ProtectKernelTunables vì nó làm /sys read-only.
 CapabilityBoundingSet=
 NoNewPrivileges=yes

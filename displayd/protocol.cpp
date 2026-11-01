@@ -38,7 +38,7 @@
  *   | missing cmd            | thiếu cmd hoặc không phải chuỗi  |
  *   | unknown command        | cmd không được hỗ trợ            |
  *   | invalid value          | value không phải số 0..100       |
- *   | backlight write failed | ghi sysfs PWM lỗi                |
+ *   | backlight write failed | ghi sysfs backlight lỗi          |
  *   +------------------------+----------------------------------+
  */
 

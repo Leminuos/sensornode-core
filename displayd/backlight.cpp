@@ -8,14 +8,11 @@
 
 #include <algorithm>
 #include <cerrno>
-#include <cstdint>
 #include <stdexcept>
 
 namespace sensornode::display {
 
 namespace {
-
-constexpr std::uint64_t kPeriodNs = 1000000;
 
 // Slider 0..100 -> duty %, theo CIE: Y = ((L+16)/116)^3 nếu L>8, ngược lại Y = L/903.3.
 constexpr int kBrightnessLut[101] = {
@@ -33,7 +30,7 @@ constexpr int kBrightnessLut[101] = {
 };
 
 bool write_attr(const std::string& path, const std::string& value) {
-    const int fd = ::open(path.c_str(), O_WRONLY | O_CLOEXEC);
+    const int fd = ::open(path.c_str(), O_WRONLY | O_TRUNC | O_CLOEXEC);
     if (fd < 0) {
         SN_LOG_ERR("backlight", "open failed: %s path=%s", log::errstr(errno).c_str(), path.c_str());
         return false;
@@ -55,25 +52,12 @@ bool exists(const std::string& path) {
 
 } // namespace
 
-Backlight::Backlight(const std::string& chip_dir, int channel)
-    : channel_dir_(chip_dir + "/pwm" + std::to_string(channel)) {
-    // Kernel tạo pwmN ngay trong lúc ghi export, không phải chờ udev vì daemon chạy root.
-    if (!exists(channel_dir_) && !write_attr(chip_dir + "/export", std::to_string(channel))) {
-        throw std::runtime_error("cannot export PWM channel " + channel_dir_);
-    }
-
-    // Kernel từ chối duty_cycle khi period còn bằng 0 nên phải ghi period trước.
-    if (!write_attr(channel_dir_ + "/period", std::to_string(kPeriodNs))) {
-        throw std::runtime_error("cannot configure " + channel_dir_);
-    }
+Backlight::Backlight(const std::string& device_dir) : brightness_path_(device_dir + "/brightness") {
+    if (!exists(brightness_path_)) throw std::runtime_error("no backlight at " + device_dir);
 }
 
 bool Backlight::set_brightness(int value) {
-    const std::uint64_t percent = kBrightnessLut[std::clamp(value, 0, 100)];
-    if (!write_attr(channel_dir_ + "/duty_cycle", std::to_string(kPeriodNs * percent / 100))) return false;
-
-    if (!enabled_) enabled_ = write_attr(channel_dir_ + "/enable", "1");
-    return enabled_;
+    return write_attr(brightness_path_, std::to_string(kBrightnessLut[std::clamp(value, 0, 100)]));
 }
 
 } // namespace sensornode::display

@@ -15,13 +15,11 @@
 #include <sys/epoll.h>
 #include <unistd.h>
 
-#include <cerrno>
 #include <chrono>
 #include <cinttypes>
 #include <csignal>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <optional>
@@ -40,8 +38,7 @@ bool show_version = false;
 
 struct Config {
     std::string socket_path     = "/run/sensornode/display.sock";
-    std::string pwm_chip        = "/sys/class/pwm/pwmchip0";
-    int         pwm_channel     = 0;
+    std::string backlight       = "/sys/class/backlight/backlight";
     std::string settings_socket = "/run/sensornode/settings.sock";
 };
 
@@ -63,8 +60,7 @@ void print_usage()
         "Usage: sensornode-displayd [options]\n"
         "\n"
         "  -s, --socket-path PATH      control socket (default: /run/sensornode/display.sock)\n"
-        "  -p, --pwm-chip PATH         backlight PWM chip (default: /sys/class/pwm/pwmchip0)\n"
-        "  -c, --pwm-channel N         backlight PWM channel (default: 0)\n"
+        "  -b, --backlight PATH        backlight device (default: /sys/class/backlight/backlight)\n"
         "  -S, --settings-socket PATH  settingsd socket (default: /run/sensornode/settings.sock)\n"
         "  -h, --help                  show this help\n"
         "  -v, --version               show version\n"
@@ -73,12 +69,11 @@ void print_usage()
 
 bool parse_args(int argc, char* argv[], Config& cfg)
 {
-    static const char short_opts[] = ":s:p:c:S:hv";
+    static const char short_opts[] = ":s:b:S:hv";
 
     static const option long_opts[] = {
         {"socket-path",     required_argument, nullptr, 's'},
-        {"pwm-chip",        required_argument, nullptr, 'p'},
-        {"pwm-channel",     required_argument, nullptr, 'c'},
+        {"backlight",       required_argument, nullptr, 'b'},
         {"settings-socket", required_argument, nullptr, 'S'},
         {"help",            no_argument,       nullptr, 'h'},
         {"version",         no_argument,       nullptr, 'v'},
@@ -89,18 +84,7 @@ bool parse_args(int argc, char* argv[], Config& cfg)
     while ((opt = getopt_long(argc, argv, short_opts, long_opts, nullptr)) != -1) {
         switch (opt) {
         case 's': cfg.socket_path = optarg; break;
-        case 'p': cfg.pwm_chip = optarg; break;
-        case 'c': {
-            errno = 0;
-            char* end = nullptr;
-            const long v = std::strtol(optarg, &end, 10);
-            if (errno != 0 || end == optarg || *end != '\0' || v < 0 || v > 255) {
-                std::fprintf(stderr, "%s: invalid --pwm-channel '%s'\n", argv[0], optarg);
-                return false;
-            }
-            cfg.pwm_channel = static_cast<int>(v);
-            break;
-        }
+        case 'b': cfg.backlight = optarg; break;
         case 'S': cfg.settings_socket = optarg; break;
         case 'h': show_help = true; break;
         case 'v': show_version = true; break;
@@ -170,8 +154,8 @@ int main(int argc, char* argv[])
             });
         });
 
-        sensornode::display::Backlight backlight(cfg.pwm_chip, cfg.pwm_channel);
-        SN_LOG_INFO("backlight", "pwm=%s/pwm%d", cfg.pwm_chip.c_str(), cfg.pwm_channel);
+        sensornode::display::Backlight backlight(cfg.backlight);
+        SN_LOG_INFO("backlight", "device=%s", cfg.backlight.c_str());
 
         // ota-confirm-boot đọc backlight= để quyết định commit slot.
         const auto apply = [&](int value) {
