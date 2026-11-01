@@ -1,0 +1,47 @@
+[Unit]
+Description=SensorNode display daemon
+After=sensornode-settingsd.service
+Wants=sensornode-settingsd.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=notify
+NotifyAccess=main
+EnvironmentFile=-@CMAKE_INSTALL_FULL_SYSCONFDIR@/default/sensornode-displayd
+ExecStart=@CMAKE_INSTALL_FULL_BINDIR@/sensornode-displayd $DISPLAYD_ARGS
+# Socket của settingsd thuộc group sensornode, root không capability không tự vào được.
+SupplementaryGroups=sensornode
+ReadWritePaths=/run/sensornode
+
+WatchdogSec=30s
+TimeoutStartSec=30s
+Restart=on-failure
+RestartSec=2s
+RestartPreventExitStatus=2
+
+# Root chỉ để ghi file sysfs PWM (chủ là root), không giữ capability nào.
+# Không bật ProtectKernelTunables vì nó làm /sys read-only.
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+DevicePolicy=closed
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=multi-user.target

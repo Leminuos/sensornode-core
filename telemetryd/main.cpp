@@ -215,6 +215,8 @@ int main(int argc, char *argv[]) {
         bool have_latest = false;
         sensornode::Sample latest;
 
+        const std::string mac = sensornode::primary_mac();
+
         sensornode::UnixServer::Options sopts;
         sopts.path = cfg.socket_path;
         sensornode::UnixServer server(loop, sopts);
@@ -223,7 +225,7 @@ int main(int argc, char *argv[]) {
         server.on_connect([&](sensornode::UnixServer::ClientId id, const sensornode::PeerCred& p) {
             SN_LOG_INFO("ipc", "client connected cid=%" PRIu64 " pid=%d uid=%d gid=%d", id,
                         static_cast<int>(p.pid), static_cast<int>(p.uid), static_cast<int>(p.gid));
-            server.send(id, sensornode::make_hello(cfg.interval));
+            server.send(id, sensornode::make_hello(cfg.interval, cfg.node_id, mac));
             return true;
         });
 

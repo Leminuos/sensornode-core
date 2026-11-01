@@ -20,14 +20,13 @@ std::string read_mac(const fs::path& iface) {
     std::string addr;
     in >> addr;
 
-    addr.erase(std::remove(addr.begin(), addr.end(), ':'), addr.end());
-    const bool all_zero = addr.find_first_not_of('0') == std::string::npos;
-    return addr.size() == 12 && !all_zero ? addr : std::string();
+    const bool all_zero = addr.find_first_not_of("0:") == std::string::npos;
+    return addr.size() == 17 && !all_zero ? addr : std::string();
 }
 
 } // namespace
 
-std::string device_id_from_mac(const std::string& net_dir) {
+std::string primary_mac(const std::string& net_dir) {
     std::error_code ec;
     std::vector<fs::path> ifaces;
     for (const auto& entry : fs::directory_iterator(net_dir, ec)) {
@@ -41,6 +40,12 @@ std::string device_id_from_mac(const std::string& net_dir) {
         if (!mac.empty()) return mac;
     }
     return {};
+}
+
+std::string device_id_from_mac(const std::string& net_dir) {
+    std::string id = primary_mac(net_dir);
+    id.erase(std::remove(id.begin(), id.end(), ':'), id.end());
+    return id;
 }
 
 std::string default_device_id() {

@@ -36,6 +36,8 @@ add_custom_target(sensornode_git_version
 add_subdirectory(common)
 add_subdirectory(telemetryd)
 add_subdirectory(otad)
+add_subdirectory(settingsd)
+add_subdirectory(displayd)
 add_subdirectory(systemd)
 
 enable_testing()

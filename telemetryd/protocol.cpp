@@ -35,7 +35,7 @@
  * -------------------
  * 
  *   hello
- *     {"type":"hello","daemon":"telemetryd","version":"0.1.0","interval_ms":5000}
+ *     {"type":"hello","daemon":"telemetryd","version":"0.1.0","interval_ms":5000, "node":"64cfd9d72124","mac":"64:cf:d9:d7:21:24"}
  *
  *   sample
  *     {"type":"sample","ts":1792297659621,"temp_c":24.16,"humi_rh":54.48,"lux":310.47,"errors":[]}
@@ -122,12 +122,15 @@ json error_reply(json reply, const char* msg) {
 
 } // namespace
 
-std::string make_hello(std::chrono::milliseconds interval) {
+std::string make_hello(std::chrono::milliseconds interval, const std::string& node,
+                       const std::string& mac) {
     return to_line({
         {"type",        "hello"},
         {"daemon",      "telemetryd"},
         {"version",     SENSORNODE_VERSION},
         {"interval_ms", interval.count()},
+        {"node",        node},
+        {"mac",         mac.empty() ? json(nullptr) : json(mac)},
     });
 }
 

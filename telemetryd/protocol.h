@@ -8,7 +8,7 @@
 namespace sensornode {
 
 // Message gửi ngay khi client kết nối
-std::string make_hello(std::chrono::milliseconds interval);
+std::string make_hello(std::chrono::milliseconds interval, const std::string& node, const std::string& mac);
 
 // Message broadcast sau mỗi lần đo.
 std::string make_sample_event(const Sample& s);

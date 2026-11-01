@@ -1,4 +1,5 @@
 add_library(sensornode_common STATIC
+    atomic_file.cpp
     device_id.cpp
     event_loop.cpp
     log.cpp
@@ -7,6 +8,7 @@ add_library(sensornode_common STATIC
     signal_fd.cpp
     systemd.cpp
     timer.cpp
+    unix_client.cpp
     unix_server.cpp
 )
 

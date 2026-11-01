@@ -1,0 +1,5 @@
+# Tham số dòng lệnh cho sensornode-displayd
+DISPLAYD_ARGS=""
+#DISPLAYD_ARGS="--pwm-chip /sys/class/pwm/pwmchip1"
+
+#SENSORNODE_LOG_LEVEL=debug
